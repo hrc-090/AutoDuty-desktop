@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoDuty</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 标题栏 -->
+  <div id="titlebar">
+    <span class="titlebar-text">AutoDuty 值日提醒</span>
+    <div class="titlebar-buttons">
+      <button id="btn-minimize" title="最小化">─</button>
+      <button id="btn-close" title="关闭到托盘">✕</button>
+    </div>
+  </div>
+
+  <!-- 标签页导航 -->
+  <div id="tabs">
+    <button class="tab active" data-tab="home">首页</button>
+    <button class="tab" data-tab="duty">值日表</button>
+    <button class="tab" data-tab="alias">别名表</button>
+    <button class="tab" data-tab="settings">设置</button>
+  </div>
+
+  <!-- ==================== 首页 ==================== -->
+  <div id="tab-home" class="tab-content active">
+    <div class="card">
+      <div class="card-label">目标日期</div>
+      <div class="date-picker-row">
+        <input type="date" id="input-manual-date">
+        <button id="btn-lookup-date" class="btn-small">查询</button>
+      </div>
+      <small class="card-hint">留空则按切换时间自动判断</small>
+    </div>
+    <div class="card">
+      <div class="card-label">值日安排</div>
+      <div id="duty-text" class="card-value duty-text">--</div>
+    </div>
+    <div class="card">
+      <div class="card-label">上次执行</div>
+      <div id="last-result" class="card-value">--</div>
+    </div>
+    <button id="btn-execute" class="btn-primary">立即执行</button>
+  </div>
+
+  <!-- ==================== 值日表 ==================== -->
+  <div id="tab-duty" class="tab-content">
+    <div class="table-header">
+      <h3>值日安排表</h3>
+      <div class="table-header-actions">
+        <button id="btn-import-duty" class="btn-secondary-small">导入 Excel</button>
+        <button id="btn-assign-dates" class="btn-secondary-small">分配日期</button>
+        <button id="btn-add-duty-row" class="btn-small">+ 添加行</button>
+      </div>
+    </div>
+
+    <!-- 分配日期面板（默认隐藏） -->
+    <div id="assign-panel" class="assign-panel hidden">
+      <div class="assign-panel-row">
+        <label>起始日期</label>
+        <input type="date" id="input-assign-start">
+      </div>
+      <div class="assign-panel-row">
+        <label>分配天数</label>
+        <input type="number" id="input-assign-count" min="0" value="0" placeholder="0=全部">
+        <small>0 表示全部分配</small>
+      </div>
+      <div class="assign-panel-row">
+        <label class="checkbox-label">
+          <input type="checkbox" id="input-assign-skip-weekend" checked>
+          <span>跳过周末</span>
+        </label>
+      </div>
+      <div class="assign-panel-actions">
+        <button id="btn-assign-confirm" class="btn-primary">确认分配</button>
+        <button id="btn-assign-cancel" class="btn-secondary">取消</button>
+      </div>
+    </div>
+
+    <div class="table-wrapper">
+      <table id="duty-table">
+        <thead>
+          <tr id="duty-table-header"></tr>
+        </thead>
+        <tbody id="duty-table-body"></tbody>
+      </table>
+    </div>
+    <div class="table-actions">
+      <button id="btn-save-duty" class="btn-primary">保存值日表</button>
+      <button id="btn-fill-names" class="btn-secondary">自动填充姓名</button>
+    </div>
+  </div>
+
+  <!-- ==================== 别名表 ==================== -->
+  <div id="tab-alias" class="tab-content">
+    <div class="table-header">
+      <h3>别名映射表</h3>
+      <div class="table-header-actions">
+        <button id="btn-import-alias" class="btn-secondary-small">导入 Excel</button>
+        <button id="btn-add-alias-row" class="btn-small">+ 添加行</button>
+      </div>
+    </div>
+    <div class="table-wrapper">
+      <table id="alias-table">
+        <thead>
+          <tr>
+            <th>中文名</th>
+            <th>别名</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="alias-table-body"></tbody>
+      </table>
+    </div>
+    <button id="btn-save-alias" class="btn-primary">保存别名表</button>
+  </div>
+
+  <!-- ==================== 设置 ==================== -->
+  <div id="tab-settings" class="tab-content">
+    <div class="setting-group">
+      <label for="input-api-url">API 地址</label>
+      <input type="text" id="input-api-url" placeholder="http://localhost:36000/duty">
+      <small>接收值日通知的 API 端点</small>
+    </div>
+    <div class="setting-group">
+      <label for="input-switch-hour">切换时间（小时）</label>
+      <input type="number" id="input-switch-hour" min="0" max="23" value="18">
+      <small>超过此时间后自动读取次日安排</small>
+    </div>
+    <div class="setting-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="input-auto-notify" checked>
+        <span>定时自动发送通知</span>
+      </label>
+      <small>在切换时间自动执行并发送通知</small>
+    </div>
+
+    <div class="setting-divider"></div>
+    <div class="setting-section-title">系统设置</div>
+
+    <div class="setting-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="input-auto-start">
+        <span>开机自启动</span>
+      </label>
+      <small>系统启动时自动运行 AutoDuty</small>
+    </div>
+    <div class="setting-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="input-start-hidden">
+        <span>启动时隐藏主界面</span>
+      </label>
+      <small>开机自启后仅显示托盘图标，不弹出窗口</small>
+    </div>
+    <div class="setting-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="input-register-protocol" checked>
+        <span>注册 duty:// URL 协议</span>
+      </label>
+      <small>启用后可在浏览器通过 duty://send 触发通知，duty://show 显示界面</small>
+    </div>
+
+    <div class="setting-divider"></div>
+    <div class="setting-section-title">软件更新</div>
+
+    <div class="setting-group">
+      <label for="input-update-url">更新源地址（JSON）</label>
+      <input type="text" id="input-update-url" placeholder="https://example.com/autoduty/update.json">
+      <small>返回 <code>{"version":"1.1.0","url":"...zip","note":"更新说明"}</code>；留空则不检查</small>
+    </div>
+    <div class="setting-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="input-auto-update" checked>
+        <span>启动时自动检查更新</span>
+      </label>
+      <small>后台检查版本，换机启动有新版本时提示</small>
+    </div>
+    <div class="setting-group">
+      <label>当前版本</label>
+      <span id="update-current-version">-</span>
+    </div>
+    <div class="setting-group">
+      <div id="update-result"></div>
+    </div>
+    <div class="setting-group">
+      <button id="btn-check-update" class="btn-primary">检查更新</button>
+      <button id="btn-download-update" class="btn-primary" style="display:none;">下载更新</button>
+    </div>
+
+    <button id="btn-save-settings" class="btn-primary">保存设置</button>
+  </div>
+
+  <!-- Toast 通知 -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

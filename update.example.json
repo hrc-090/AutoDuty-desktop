@@ -1,0 +1,5 @@
+{
+  "version": "1.1.0",
+  "url": "https://example.com/autoduty/autoduty-v1.1.0.zip",
+  "note": "本文件是更新清单样例，仅用于说明格式。把 version 改成比当前更高的版本号并填好 url，程序就能检测到更新。"
+}

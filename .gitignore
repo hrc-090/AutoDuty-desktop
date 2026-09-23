@@ -1,0 +1,35 @@
+# ===== Electron 运行时 / 可执行文件 =====
+AutoDuty.exe
+*.dll
+*.pak
+*.bin
+*.dat
+snapshot_blob.bin
+v8_context_snapshot.bin
+LICENSES.chromium.html
+LICENSE.electron.txt
+locales/
+resources.pak
+vulkan-1.dll
+libEGL.dll
+libGLESv2.dll
+ffmpeg.dll
+d3dcompiler_47.dll
+
+# 打包中间物（解压前残留）
+resources/app.asar
+resources/elevate.exe
+vk_swiftshader_icd.json
+
+# ===== 依赖 =====
+node_modules/
+
+# ===== 运行时数据（含值日人员信息，不入库）=====
+data/
+*.xlsx
+
+# ===== 系统 / IDE =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,12 @@
+{
+  "name": "autoduty",
+  "version": "1.0.0",
+  "description": "值日安排自动化管理系统",
+  "main": "main.js",
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "xlsx": "^0.18.5",
+    "pinyin-pro": "^3.24.2",
+    "node-fetch": "^2.7.0"
+  }
+}
