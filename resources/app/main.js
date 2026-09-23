@@ -3,12 +3,11 @@
  */
 
 const electron = require('electron');
-const { app, BrowserWindow, Tray, Menu, dialog, shell } = electron;
+const { app, BrowserWindow, Tray, Menu, dialog, shell, net } = electron;
 const ipcMain = electron.ipcMain;
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
-const fetch = require('node-fetch');
 const dutyCore = require('./duty-core');
 
 const CURRENT_VERSION = require('./package.json').version;
@@ -265,9 +264,15 @@ function compareVersions(a, b) {
 
 // 更新源 JSON 约定：{ "version":"1.1.0", "url":"https://.../autoduty-update.zip", "note":"更新说明" }
 async function fetchUpdateInfo(updateUrl, timeoutMs = 8000) {
-  const res = await fetch(updateUrl, { timeout: timeoutMs });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await net.fetch(updateUrl, { signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function checkForUpdate(manual) {
@@ -306,9 +311,9 @@ async function downloadUpdate(url) {
     const dir = app.getPath('downloads');
     const name = (path.basename(url.split('?')[0]) || 'autoduty-update.zip');
     const dest = path.join(dir, name);
-    const res = await fetch(url);
+    const res = await net.fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const buf = await res.buffer();
+    const buf = Buffer.from(await res.arrayBuffer());
     fs.writeFileSync(dest, buf);
     shell.openPath(dir);
     return { success: true, path: dest };
