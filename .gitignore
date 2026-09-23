@@ -33,3 +33,11 @@ data/
 Thumbs.db
 .idea/
 .vscode/
+
+# ===== 打包中间物 =====
+resources/app.asar.bak
+resources/electron.exe
+release/
+builder/
+pkg-temp/
+updates/

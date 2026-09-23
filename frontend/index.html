@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="theme-light">
+<head>
+    <meta charset="UTF-8">
+    <title>AutoDuty 值日提醒</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+      // 跟随系统深浅色主题（WinUIonWeb 的 token 定义在 html.theme-light / html.theme-dark）
+      (function () {
+        var apply = function (dark) {
+          var el = document.documentElement;
+          el.classList.toggle('theme-dark', dark);
+          el.classList.toggle('theme-light', !dark);
+        };
+        var m = window.matchMedia('(prefers-color-scheme: dark)');
+        apply(m.matches);
+        if (m.addEventListener) m.addEventListener('change', function (e) { apply(e.matches); });
+        else if (m.addListener) m.addListener(function (e) { apply(e.matches); });
+      })();
+    </script>
+</head>
+<body>
+    <div id="app"></div>
+    <script type="module" src="/src/autoduty/main.ts"></script>
+</body>
+</html>

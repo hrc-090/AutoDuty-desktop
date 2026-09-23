@@ -1,0 +1,19 @@
+/* 注入 WinUI 图标字体（上游仅在 MediaPlayerElement 组件内定义，此处全局启用，
+   供 NavigationView / TitleBar 等组件内的 Segoe 字形使用） */
+@font-face {
+  font-family: 'WinUIOnWebIcons';
+  src: url('@winui/assets/Fonts/SEGOEICONS.TTF') format('truetype');
+}
+
+.icon,
+.win-nav-item .icon,
+.win-nav-group-header .icon,
+.win-nav-group-child .icon,
+.win-titlebar .icon {
+  font-family: 'WinUIOnWebIcons', 'Segoe MDL2 Assets', 'Segoe Fluent Icons', 'Segoe UI', sans-serif;
+}
+
+/* 原生 Windows 标题栏按钮 overlay 让位（titleBarOverlay 右上角约 138px） */
+.win-titlebar {
+  --TitleBarRightPaddingWidth: 138px;
+}

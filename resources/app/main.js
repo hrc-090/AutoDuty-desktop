@@ -65,7 +65,6 @@ const store = new Store({
     autoStart: false,
     startHidden: false,
     registerProtocol: true,
-    updateUrl: '',
     autoUpdate: true,
   },
 });
@@ -104,12 +103,14 @@ let tray = null;
 
 function createWindow(showWindow = true) {
   mainWindow = new BrowserWindow({
-    width: 520,
+    width: 760,
     height: 680,
     resizable: true,
-    minWidth: 420,
+    minWidth: 560,
     minHeight: 500,
     frame: false,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { height: 48 },
     icon: path.join(__dirname, 'src', 'icon.png'),
     show: showWindow,
     webPreferences: {
@@ -119,7 +120,7 @@ function createWindow(showWindow = true) {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+  mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
 
   // 如果需要显示，等 ready-to-show 再显示避免白屏
   if (showWindow) {
@@ -220,7 +221,6 @@ ipcMain.handle('config:get', () => ({
   autoStart: store.get('autoStart', false),
   startHidden: store.get('startHidden', false),
   registerProtocol: store.get('registerProtocol', true),
-  updateUrl: store.get('updateUrl', ''),
   autoUpdate: store.get('autoUpdate', true),
   currentVersion: CURRENT_VERSION,
 }));
@@ -238,7 +238,6 @@ ipcMain.handle('config:set', (_, config) => {
     store.set('registerProtocol', config.registerProtocol);
     updateProtocolRegistration(config.registerProtocol);
   }
-  if (config.updateUrl !== undefined) store.set('updateUrl', config.updateUrl);
   if (config.autoUpdate !== undefined) store.set('autoUpdate', config.autoUpdate);
   startSchedule();
   return true;
@@ -262,32 +261,41 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// 更新源 JSON 约定：{ "version":"1.1.0", "url":"https://.../autoduty-update.zip", "note":"更新说明" }
-async function fetchUpdateInfo(updateUrl, timeoutMs = 8000) {
+// 从 GitHub Releases 检查更新（AutoDuty 更新源）
+const GITHUB_OWNER = 'hrc-090';
+const GITHUB_REPO = 'AutoDuty-desktop';
+// GitHub 文件加速代理（可选，形如 https://gh-proxy.net/ ；留空则直连）
+const GITHUB_PROXY = '';
+
+async function fetchGitHubRelease(timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await net.fetch(updateUrl, { signal: controller.signal });
+    // 用 releases?per_page=1 而非 releases/latest：无 Release 时 latest 返回 404，列表端点返回 200+[]
+    const res = await net.fetch(
+      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases?per_page=1`,
+      { signal: controller.signal, headers: { Accept: 'application/vnd.github+json' } }
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const releases = await res.json();
+    const release = (releases && releases[0]) || null;
+    if (!release) return { version: '', url: '', note: '' };
+    const tag = String(release.tag_name || '').trim();
+    const version = tag.replace(/^[vV]/, '');
+    const asset = (release.assets && release.assets[0]) || null;
+    const githubUrl = (asset && asset.browser_download_url) || release.zipball_url || '';
+    const url = githubUrl ? (GITHUB_PROXY ? GITHUB_PROXY + githubUrl : githubUrl) : '';
+    const note = String(release.body || '').split('\n')[0].trim();
+    return { version, url, note };
   } finally {
     clearTimeout(timer);
   }
 }
 
 async function checkForUpdate(manual) {
-  const updateUrl = (store.get('updateUrl') || '').trim();
-  if (!updateUrl) {
-    lastUpdateCheck = {
-      hasUpdate: false, current: CURRENT_VERSION, latest: null,
-      url: '', note: '',
-      error: manual ? '未配置更新源地址，请先在设置中填写' : null,
-    };
-    return lastUpdateCheck;
-  }
   try {
-    const info = await fetchUpdateInfo(updateUrl);
-    const latest = String(info.version || '').trim();
+    const info = await fetchGitHubRelease();
+    const latest = info.version || '';
     const hasUpdate = latest && compareVersions(latest, CURRENT_VERSION) > 0;
     lastUpdateCheck = {
       hasUpdate, current: CURRENT_VERSION, latest: latest || null,
@@ -335,8 +343,6 @@ ipcMain.handle('update:status', () => ({
 // 启动后后台自动检查更新（可开关）
 function autoCheckUpdate() {
   if (!store.get('autoUpdate', true)) return;
-  const updateUrl = (store.get('updateUrl') || '').trim();
-  if (!updateUrl) return;
   setTimeout(async () => {
     const info = await checkForUpdate(false);
     if (info.hasUpdate && mainWindow && !mainWindow.isDestroyed()) {

@@ -7,22 +7,27 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- 标题栏 -->
+  <!-- 标题栏（WinUI TitleBar：透明可拖拽） -->
   <div id="titlebar">
-    <span class="titlebar-text">AutoDuty 值日提醒</span>
+    <span class="titlebar-title"><span class="titlebar-glyph">📅</span> AutoDuty 值日提醒</span>
     <div class="titlebar-buttons">
-      <button id="btn-minimize" title="最小化">─</button>
+      <button id="btn-minimize" class="minimize" title="最小化">─</button>
       <button id="btn-close" title="关闭到托盘">✕</button>
     </div>
   </div>
 
-  <!-- 标签页导航 -->
-  <div id="tabs">
-    <button class="tab active" data-tab="home">首页</button>
-    <button class="tab" data-tab="duty">值日表</button>
-    <button class="tab" data-tab="alias">别名表</button>
-    <button class="tab" data-tab="settings">设置</button>
-  </div>
+  <!-- 标签页导航（WinUI NavigationView：左侧） -->
+  <div class="app-shell">
+    <nav id="tabs">
+      <div class="nav-header">AutoDuty</div>
+      <button class="tab active" data-tab="home"><span class="tab-glyph">🏠</span><span class="tab-text">首页</span></button>
+      <button class="tab" data-tab="duty"><span class="tab-glyph">📋</span><span class="tab-text">值日表</span></button>
+      <button class="tab" data-tab="alias"><span class="tab-glyph">🔤</span><span class="tab-text">别名表</span></button>
+      <button class="tab" data-tab="settings"><span class="tab-glyph">⚙️</span><span class="tab-text">设置</span></button>
+    </nav>
+
+  <!-- WinUI 内容容器（Mica） -->
+  <div id="app-body">
 
   <!-- ==================== 首页 ==================== -->
   <div id="tab-home" class="tab-content active">
@@ -191,6 +196,9 @@
 
     <button id="btn-save-settings" class="btn-primary">保存设置</button>
   </div>
+
+  </div><!-- /#app-body -->
+  </div><!-- /.app-shell -->
 
   <!-- Toast 通知 -->
   <div id="toast" class="toast hidden"></div>
