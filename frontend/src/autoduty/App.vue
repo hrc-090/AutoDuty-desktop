@@ -30,7 +30,7 @@
 </template>
 
 <script setup>
-import { ref, shallowRef, computed, onMounted } from 'vue';
+import { ref, shallowRef, onMounted, onBeforeUnmount } from 'vue';
 import TitleBar from '@winui/components/TitleBar.vue';
 import NavigationView from '@winui/components/NavigationView.vue';
 import DutyHomePage from './pages/DutyHomePage.vue';
@@ -45,32 +45,65 @@ const navMenuItems = [
   { Tag: 'home', Icon: '\uE80F', Content: '首页' },
   { Tag: 'duty', Icon: '\uE8FD', Content: '值日表' },
   { Tag: 'alias', Icon: '\uE8D2', Content: '别名表' },
-  { Tag: 'settings', Icon: '\uE713', Content: '设置' },
+  // Tag 不能用 'settings'：组件 resolveSelectedValue 会把 Tag==='settings' 的对象
+  // 直接解析为内置设置项（字符串 'settings'），导致受控选中链路拿不到 nvi-N 值，
+  // itemRefs 查找失败、蓝条指示器不移动。改用非保留值 'prefs'。
+  { Tag: 'prefs', Icon: '\uE713', Content: '设置' },
 ];
 
 const pages = {
   home: DutyHomePage,
   duty: DutyTablePage,
   alias: AliasTablePage,
-  settings: SettingsPage,
+  prefs: SettingsPage,
 };
 
 const current = ref('home');
 const currentComponent = shallowRef(pages.home);
+// SelectedItem 必须对象受控：组件 emit update:SelectedItem 会回传原始菜单项对象
+// （引用与 flattened item.source 一致），内部 resolveSelectedValue 才能解析出
+// nvi-N 值并移动蓝条指示器；字符串受控会收到 Tag 字符串导致指示器失配
 const selectedNav = ref(navMenuItems[0]);
 
-function onItemInvoked(evt) {
-  // NavigationView 的 ItemInvoked payload：{ InvokedItem, InvokedItemContainer, ... }
-  // InvokedItemContainer 是原始菜单项（source），Tag 字段为大写 Tag / Value / Name / value
-  const src = evt?.InvokedItemContainer;
-  const tag = src?.Tag ?? src?.tag ?? src?.Value ?? src?.value;
+function switchPage(tag) {
   if (tag && pages[tag]) {
     current.value = tag;
     currentComponent.value = pages[tag];
   }
 }
 
+function onItemInvoked(evt) {
+  // NavigationView 的 ItemInvoked payload：{ InvokedItem, InvokedItemContainer, ... }
+  // InvokedItemContainer 是原始菜单项（source），Tag 字段为大写 Tag / Value / Name / value
+  const src = evt?.InvokedItemContainer;
+  const tag = src?.Tag ?? src?.tag ?? src?.Value ?? src?.value;
+  switchPage(tag);
+}
+
+// ---- 触屏兜底：某些触屏环境 NavigationView 的 click 合成可能失效，----
+// ---- 用 pointerdown/up + 位移判定模拟点击，拖动滚动不算点击 ----
+let navPointerDown = null;
+function onNavPointerDown(e) {
+  navPointerDown = { x: e.clientX, y: e.clientY };
+}
+function onNavPointerUp(e) {
+  if (!navPointerDown) return;
+  const dx = e.clientX - navPointerDown.x;
+  const dy = e.clientY - navPointerDown.y;
+  navPointerDown = null;
+  if (Math.abs(dx) > 10 || Math.abs(dy) > 10) return; // 滚动/拖动，忽略
+  const el = e.target && typeof e.target.closest === 'function'
+    ? e.target.closest('.win-nav-item')
+    : null;
+  if (!el) return;
+  // 触屏下 click 可能不被浏览器合成：手动分发 click，让 NavigationView
+  // 内部完整链路（选中态 + 蓝条指示 + ItemInvoked）全部走正常逻辑
+  el.click();
+}
+
 onMounted(() => {
+  document.addEventListener('pointerdown', onNavPointerDown, true);
+  document.addEventListener('pointerup', onNavPointerUp, true);
   // 统一监听一次值日执行结果，写入共享状态 + Toast
   if (api && typeof api.onDutyResult === 'function') {
     api.onDutyResult((result) => {
@@ -90,6 +123,11 @@ onMounted(() => {
       }
     });
   }
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onNavPointerDown, true);
+  document.removeEventListener('pointerup', onNavPointerUp, true);
 });
 </script>
 

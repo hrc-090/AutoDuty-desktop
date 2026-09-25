@@ -7,10 +7,12 @@
     "build": "vite build"
   },
   "dependencies": {
-    "vue": "^3.5.32"
+    "vue": "^3.5.32",
+    "x-data-spreadsheet": "^1.1.9"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.6",
+    "less": "^4.9.1",
     "vite": "^8.0.8"
   }
 }

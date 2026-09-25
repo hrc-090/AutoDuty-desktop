@@ -26,28 +26,8 @@
         </div>
       </Border>
 
-      <div class="ad-table-wrap">
-        <table class="ad-table">
-          <thead>
-            <tr>
-              <th v-for="h in dutyHeaders" :key="h">{{ h }}</th>
-              <th class="ad-th-op">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, r) in dutyRows" :key="r">
-              <td
-                v-for="(cell, c) in row" :key="c"
-                :class="{ 'ad-date-cell': dutyHeaders[c] && dutyHeaders[c].includes('日期') }"
-                contenteditable="true"
-                @blur="onCellBlur(r, c, $event)">{{ cell }}</td>
-              <td>
-                <Button Style="SubtleButtonStyle" Content="删除" @Click="deleteRow(r)" />
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <!-- Excel 风格网格 -->
+      <div class="ad-sheet" ref="sheetEl"></div>
 
       <div class="ad-row">
         <Button Style="AccentButtonStyle" Content="保存值日表" @Click="onSave" />
@@ -58,41 +38,101 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import ScrollViewer from '@winui/components/ScrollViewer.vue';
 import TextBlock from '@winui/components/TextBlock.vue';
 import Border from '@winui/components/Border.vue';
 import Button from '@winui/components/Button.vue';
 import ToggleSwitch from '@winui/components/ToggleSwitch.vue';
+import Spreadsheet from 'x-data-spreadsheet/src/index';
+import 'x-data-spreadsheet/dist/xspreadsheet.css';
+import zhCN from '../xspreadsheet-zh';
 import { useAutoduty } from '../useAutoduty';
 import { showToast } from '../toast';
 
+Spreadsheet.locale('zh-cn', zhCN);
+
 const api = useAutoduty();
-const dutyHeaders = ref([]);
-const dutyRows = ref([]);
+const sheetEl = ref(null);
+let sheet = null;
+
 const assignOpen = ref(false);
 const assignStart = ref('');
 const assignCount = ref(0);
 const assignSkipWeekend = ref(true);
 
+// 值日表数据 { headers, rows } → x-spreadsheet 数据（首行为表头）
+function toSheetData(headers, rows) {
+  const data = { rows: {} };
+  const hLen = (headers || []).length;
+  const rLen = Math.max(...(rows || []).map((r) => r.length), 0);
+  const maxC = Math.max(hLen, rLen, 1);
+  const headerRow = { cells: {} };
+  (headers || []).forEach((h, c) => {
+    headerRow.cells[c + 1] = { text: String(h ?? '') };
+  });
+  data.rows[1] = headerRow;
+  (rows || []).forEach((row, r) => {
+    const cells = {};
+    for (let c = 0; c < maxC; c += 1) {
+      const v = row[c];
+      if (v !== undefined && v !== null && v !== '') cells[c + 1] = { text: String(v) };
+    }
+    data.rows[r + 2] = { cells };
+  });
+  return data;
+}
+
+// x-spreadsheet 数据 → 值日表数据（首行还原为表头）
+function fromSheetData(data) {
+  const headers = [];
+  const rows = [];
+  const rowKeys = Object.keys(data.rows || {})
+    .map(Number)
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+  let maxC = 0;
+  const raw = {};
+  rowKeys.forEach((r) => {
+    const cells = (data.rows[r] || {}).cells || {};
+    const row = [];
+    Object.keys(cells).forEach((c) => {
+      const ci = Number(c);
+      if (Number.isFinite(ci)) {
+        row[ci - 1] = (cells[c] || {}).text ?? '';
+        if (ci > maxC) maxC = ci;
+      }
+    });
+    raw[r] = row;
+  });
+  for (let c = 0; c < maxC; c += 1) {
+    headers[c] = (raw[1] || [])[c] || '';
+  }
+  for (let r = 2; r <= rowKeys[rowKeys.length - 1]; r += 1) {
+    const row = [];
+    for (let c = 0; c < maxC; c += 1) row[c] = (raw[r] || [])[c] || '';
+    rows.push(row);
+  }
+  return { headers, rows };
+}
+
 async function loadDutyTable() {
-  if (!api) return;
+  if (!api || !sheet) return;
   const data = await api.getDutyAll();
-  dutyHeaders.value = data.headers || [];
-  dutyRows.value = data.rows || [];
-}
-
-function onCellBlur(r, c, e) {
-  const value = e.target.textContent.trim();
-  dutyRows.value[r][c] = value;
-}
-
-function deleteRow(r) {
-  dutyRows.value.splice(r, 1);
+  sheet.loadData(toSheetData(data.headers || [], data.rows || []));
 }
 
 function addRow() {
-  dutyRows.value.push(dutyHeaders.value.map(() => ''));
+  if (!sheet) return;
+  // 在数据区末尾追加一个空行（首行表头之外）
+  const data = sheet.getData();
+  const lastRow = Math.max(...Object.keys(data.rows || {}).map(Number).filter(Number.isFinite), 1);
+  const cells = {};
+  Object.keys((data.rows[1] || {}).cells || {}).forEach((c) => {
+    cells[c] = { text: '' };
+  });
+  data.rows[lastRow + 1] = { cells };
+  sheet.loadData(data);
 }
 
 function toggleAssign() {
@@ -105,8 +145,10 @@ function toggleAssign() {
 }
 
 async function onSave() {
-  if (!api) return;
-  await api.saveDuty({ headers: dutyHeaders.value, rows: dutyRows.value });
+  if (!api || !sheet) return;
+  const data = sheet.getData();
+  const { headers, rows } = fromSheetData(data);
+  await api.saveDuty({ headers, rows });
   showToast('值日表已保存');
 }
 
@@ -123,7 +165,14 @@ async function onFillNames() {
 
 async function onImport() {
   if (!api) return;
-  const result = await api.importDuty();
+  let result;
+  try {
+    showToast('正在打开文件选择框…');
+    result = await api.importDuty();
+  } catch (e) {
+    showToast('导入失败：' + (e?.message || e));
+    return;
+  }
   if (result?.success) {
     showToast(result.message);
     await loadDutyTable();
@@ -150,7 +199,25 @@ async function onAssignConfirm() {
   }
 }
 
-onMounted(loadDutyTable);
+onMounted(() => {
+  sheet = new Spreadsheet(sheetEl.value, {
+    showToolbar: true,
+    showGrid: true,
+    showContextmenu: true,
+    view: {
+      showRowHeader: true,
+      showColHeader: true,
+    },
+    row: { len: 1000, height: 26 },
+    column: { len: 40, width: 96 },
+  });
+  loadDutyTable();
+});
+
+onBeforeUnmount(() => {
+  if (sheet) sheet.destroy?.();
+  sheet = null;
+});
 </script>
 
 <style scoped>
@@ -163,6 +230,8 @@ onMounted(loadDutyTable);
   flex-direction: column;
   gap: 16px;
   padding: 24px 32px 40px;
+  min-height: 100%;
+  box-sizing: border-box;
 }
 
 .ad-toolbar {
@@ -221,54 +290,18 @@ onMounted(loadDutyTable);
   gap: 8px;
 }
 
-.ad-table-wrap {
-  overflow-x: auto;
+/* Excel 网格容器：随窗口高度自适应（至少 440px，无上限） */
+.ad-sheet {
+  flex: 1 1 auto;
+  min-height: 440px;
   border: 1px solid var(--card-stroke);
   border-radius: var(--ControlCornerRadius, 4px);
-  background: var(--card-bg);
+  overflow: hidden;
+  background: #fff;
 }
 
-.ad-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-  color: var(--text-primary);
-}
-
-.ad-table th {
-  position: sticky;
-  top: 0;
-  padding: 10px 12px;
-  text-align: left;
-  font-weight: 600;
-  background: var(--card-bg-secondary);
-  color: var(--text-secondary);
-  border-bottom: 1px solid var(--card-stroke);
-  white-space: nowrap;
-}
-
-.ad-table td {
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--stroke-divider);
-  min-width: 40px;
-  outline: none;
-}
-
-.ad-table td:focus {
-  background: var(--ctrl-fill-tertiary);
-}
-
-.ad-table tbody tr:hover {
-  background: var(--ctrl-fill-secondary);
-}
-
-.ad-date-cell {
-  font-variant-numeric: tabular-nums;
-}
-
-.ad-th-op,
-.ad-table td:last-child {
-  width: 64px;
-  white-space: nowrap;
+/* 深色主题下让网格工具栏/内容区保持亮色（Excel 风格） */
+:global(.ad-sheet .x-spreadsheet) {
+  background: #fff;
 }
 </style>

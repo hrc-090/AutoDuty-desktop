@@ -17,3 +17,49 @@
 .win-titlebar {
   --TitleBarRightPaddingWidth: 138px;
 }
+
+/* ===== 触屏优化（一体机/触控屏，WinUI 40px 最小触摸目标） ===== */
+@media (pointer: coarse) {
+  /* 按钮最小触摸高度 */
+  .win-btn {
+    min-height: 40px !important;
+  }
+
+  /* 开关整行加高，扩大点击区 */
+  .win-switch-root {
+    min-height: 44px !important;
+  }
+  .win-switch-wrap {
+    padding: 8px 0 !important;
+  }
+
+  /* 表格单元格加大（手指点选 / 编辑友好） */
+  .ad-table th,
+  .ad-table td {
+    padding: 10px 14px !important;
+    min-height: 44px !important;
+  }
+
+  /* 输入控件加高 */
+  .ad-input {
+    height: 40px !important;
+  }
+
+  /* 工具栏 / 按钮组间距加大 */
+  .ad-toolbar-actions {
+    gap: 8px !important;
+  }
+  .ad-row {
+    gap: 12px !important;
+  }
+
+  /* 触屏无 hover，避免点击后残留高亮 */
+  .ad-table tbody tr:hover {
+    background: transparent !important;
+  }
+
+  /* 导航项：立即响应轻点（避免可滚动容器内 tap 被吞 / 300ms 延迟） */
+  .win-nav-item {
+    touch-action: manipulation;
+  }
+}

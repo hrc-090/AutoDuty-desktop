@@ -9,26 +9,8 @@
         </div>
       </div>
 
-      <div class="ad-table-wrap">
-        <table class="ad-table">
-          <thead>
-            <tr>
-              <th>中文名</th>
-              <th>别名</th>
-              <th class="ad-th-op">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(entry, idx) in aliasData" :key="idx">
-              <td contenteditable="true" @blur="onCellBlur(idx, 'name', $event)">{{ entry.name }}</td>
-              <td contenteditable="true" @blur="onCellBlur(idx, 'alias', $event)">{{ entry.alias }}</td>
-              <td>
-                <Button Style="SubtleButtonStyle" Content="删除" @Click="deleteRow(idx)" />
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <!-- Excel 风格网格 -->
+      <div class="ad-sheet" ref="sheetEl"></div>
 
       <div class="ad-row">
         <Button Style="AccentButtonStyle" Content="保存别名表" @Click="onSave" />
@@ -38,42 +20,91 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import ScrollViewer from '@winui/components/ScrollViewer.vue';
 import TextBlock from '@winui/components/TextBlock.vue';
 import Button from '@winui/components/Button.vue';
+import Spreadsheet from 'x-data-spreadsheet/src/index';
+import 'x-data-spreadsheet/dist/xspreadsheet.css';
+import zhCN from '../xspreadsheet-zh';
 import { useAutoduty } from '../useAutoduty';
 import { showToast } from '../toast';
 
+Spreadsheet.locale('zh-cn', zhCN);
+
 const api = useAutoduty();
-const aliasData = ref([]);
+const sheetEl = ref(null);
+let sheet = null;
+
+// 别名表 entries [{name, alias}] → x-spreadsheet 数据（首行固定表头）
+function toSheetData(entries) {
+  const data = { rows: {} };
+  data.rows[1] = {
+    cells: {
+      1: { text: '中文名' },
+      2: { text: '别名' },
+    },
+  };
+  (entries || []).forEach((entry, r) => {
+    const cells = {};
+    const name = String(entry.name ?? '');
+    const alias = String(entry.alias ?? '');
+    if (name) cells[1] = { text: name };
+    if (alias) cells[2] = { text: alias };
+    data.rows[r + 2] = { cells };
+  });
+  return data;
+}
+
+// x-spreadsheet 数据 → entries [{name, alias}]
+function fromSheetData(data) {
+  const entries = [];
+  const rowKeys = Object.keys(data.rows || {})
+    .map(Number)
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+  rowKeys.forEach((r) => {
+    if (r <= 1) return;
+    const cells = (data.rows[r] || {}).cells || {};
+    entries.push({
+      name: (cells[1] || {}).text ?? '',
+      alias: (cells[2] || {}).text ?? '',
+    });
+  });
+  return entries;
+}
 
 async function loadAliasTable() {
-  if (!api) return;
-  aliasData.value = await api.getAliasAll();
-}
-
-function onCellBlur(idx, field, e) {
-  aliasData.value[idx][field] = e.target.textContent.trim();
-}
-
-function deleteRow(idx) {
-  aliasData.value.splice(idx, 1);
+  if (!api || !sheet) return;
+  const entries = await api.getAliasAll();
+  sheet.loadData(toSheetData(entries));
 }
 
 function addRow() {
-  aliasData.value.push({ name: '', alias: '' });
+  if (!sheet) return;
+  const data = sheet.getData();
+  const lastRow = Math.max(...Object.keys(data.rows || {}).map(Number).filter(Number.isFinite), 1);
+  data.rows[lastRow + 1] = { cells: { 1: { text: '' }, 2: { text: '' } } };
+  sheet.loadData(data);
 }
 
 async function onSave() {
-  if (!api) return;
-  await api.saveAlias(aliasData.value);
+  if (!api || !sheet) return;
+  const data = sheet.getData();
+  await api.saveAlias(fromSheetData(data));
   showToast('别名表已保存');
 }
 
 async function onImport() {
   if (!api) return;
-  const result = await api.importAlias();
+  let result;
+  try {
+    showToast('正在打开文件选择框…');
+    result = await api.importAlias();
+  } catch (e) {
+    showToast('导入失败：' + (e?.message || e));
+    return;
+  }
   if (result?.success) {
     showToast(result.message);
     await loadAliasTable();
@@ -82,7 +113,25 @@ async function onImport() {
   }
 }
 
-onMounted(loadAliasTable);
+onMounted(() => {
+  sheet = new Spreadsheet(sheetEl.value, {
+    showToolbar: true,
+    showGrid: true,
+    showContextmenu: true,
+    view: {
+      showRowHeader: true,
+      showColHeader: true,
+    },
+    row: { len: 1000, height: 26 },
+    column: { len: 40, width: 140 },
+  });
+  loadAliasTable();
+});
+
+onBeforeUnmount(() => {
+  if (sheet) sheet.destroy?.();
+  sheet = null;
+});
 </script>
 
 <style scoped>
@@ -95,6 +144,8 @@ onMounted(loadAliasTable);
   flex-direction: column;
   gap: 16px;
   padding: 24px 32px 40px;
+  min-height: 100%;
+  box-sizing: border-box;
 }
 
 .ad-toolbar {
@@ -114,51 +165,23 @@ onMounted(loadAliasTable);
   gap: 4px;
 }
 
-.ad-table-wrap {
-  overflow-x: auto;
-  border: 1px solid var(--card-stroke);
-  border-radius: var(--ControlCornerRadius, 4px);
-  background: var(--card-bg);
-}
-
-.ad-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-  color: var(--text-primary);
-}
-
-.ad-table th {
-  padding: 10px 12px;
-  text-align: left;
-  font-weight: 600;
-  background: var(--card-bg-secondary);
-  color: var(--text-secondary);
-  border-bottom: 1px solid var(--card-stroke);
-}
-
-.ad-table td {
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--stroke-divider);
-  outline: none;
-}
-
-.ad-table td:focus {
-  background: var(--ctrl-fill-tertiary);
-}
-
-.ad-table tbody tr:hover {
-  background: var(--ctrl-fill-secondary);
-}
-
-.ad-th-op,
-.ad-table td:last-child {
-  width: 64px;
-  white-space: nowrap;
-}
-
 .ad-row {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+/* Excel 网格容器：随窗口高度自适应（至少 440px，无上限） */
+.ad-sheet {
+  flex: 1 1 auto;
+  min-height: 440px;
+  border: 1px solid var(--card-stroke);
+  border-radius: var(--ControlCornerRadius, 4px);
+  overflow: hidden;
+  background: #fff;
+}
+
+:global(.ad-sheet .x-spreadsheet) {
+  background: #fff;
 }
 </style>

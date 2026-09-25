@@ -387,14 +387,23 @@ ipcMain.handle('duty:save', (_, data) => {
 
 // 导入外部 xlsx 文件为值日表
 ipcMain.handle('duty:import', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    title: '选择值日表文件',
-    filters: [
-      { name: 'Excel 文件', extensions: ['xlsx', 'xls'] },
-      { name: '所有文件', extensions: ['*'] },
-    ],
-    properties: ['openFile'],
-  });
+  let result;
+  try {
+    // mainWindow 可能已销毁/不可用，此时用无父窗口的对话框兜底
+    result = await dialog.showOpenDialog(
+      mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+      {
+        title: '选择值日表文件',
+        filters: [
+          { name: 'Excel 文件', extensions: ['xlsx', 'xls'] },
+          { name: '所有文件', extensions: ['*'] },
+        ],
+        properties: ['openFile'],
+      }
+    );
+  } catch (err) {
+    return { success: false, message: '无法打开文件选择框：' + err.message };
+  }
 
   if (result.canceled || result.filePaths.length === 0) {
     return { success: false, message: '已取消' };
