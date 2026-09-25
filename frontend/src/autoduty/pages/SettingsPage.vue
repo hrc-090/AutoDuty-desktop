@@ -42,7 +42,13 @@
 
         <div class="ad-row">
           <Button Style="DefaultButtonStyle" Content="检查更新" @Click="onCheckUpdate" />
-          <Button v-if="updateUrl" Style="AccentButtonStyle" Content="下载更新" @Click="onDownloadUpdate" />
+          <Button v-if="updateUrl && downloadState !== 'done'" Style="AccentButtonStyle" Content="下载更新" @Click="onDownloadUpdate" />
+          <Button v-if="downloadState === 'done'" Style="AccentButtonStyle" Content="立即安装" @Click="onInstallUpdate" />
+        </div>
+
+        <div v-if="downloadState === 'downloading'" class="ad-download">
+          <ProgressBar :Value="downloadProgress" Maximum="100" MinHeight="4" />
+          <TextBlock class="ad-hint" :Text="`正在下载更新包… ${downloadProgress}%`" FontSize="12" />
         </div>
       </Border>
 
@@ -57,6 +63,7 @@ import ScrollViewer from '@winui/components/ScrollViewer.vue';
 import TextBlock from '@winui/components/TextBlock.vue';
 import Border from '@winui/components/Border.vue';
 import Button from '@winui/components/Button.vue';
+import ProgressBar from '@winui/components/ProgressBar.vue';
 import ToggleSwitch from '@winui/components/ToggleSwitch.vue';
 import TextBox from '@winui/components/TextBox.vue';
 import { useAutoduty } from '../useAutoduty';
@@ -75,6 +82,9 @@ const settings = reactive({
 const currentVersion = ref('-');
 const updateResult = ref('');
 const updateUrl = ref('');
+const downloadState = ref('idle'); // idle | downloading | done | error
+const downloadProgress = ref(0);
+const downloadedPath = ref('');
 
 async function loadSettings() {
   if (!api) return;
@@ -112,16 +122,36 @@ async function onCheckUpdate() {
 
 async function onDownloadUpdate() {
   if (!api || !updateUrl.value) return;
+  downloadState.value = 'downloading';
+  downloadProgress.value = 0;
   const res = await api.downloadUpdate(updateUrl.value);
   if (res?.success) {
+    downloadState.value = 'done';
+    downloadedPath.value = res.path;
     showToast(`更新包已下载：${res.path}`);
   } else {
+    downloadState.value = 'error';
     showToast(res?.message || '下载失败');
+  }
+}
+
+async function onInstallUpdate() {
+  if (!api || !downloadedPath.value) return;
+  const res = await api.installUpdate(downloadedPath.value);
+  showToast(res?.message || (res?.success ? '正在启动安装…' : '启动安装失败'));
+}
+
+function onUpdateProgress(info) {
+  if (info && typeof info.percent === 'number' && info.percent >= 0) {
+    downloadProgress.value = info.percent;
   }
 }
 
 function renderUpdateResult(r) {
   updateUrl.value = '';
+  downloadState.value = 'idle';
+  downloadProgress.value = 0;
+  downloadedPath.value = '';
   if (!r) {
     updateResult.value = '';
     return;
@@ -142,7 +172,10 @@ function renderUpdateResult(r) {
   }
 }
 
-onMounted(loadSettings);
+onMounted(() => {
+  loadSettings();
+  if (api?.onUpdateProgress) api.onUpdateProgress(onUpdateProgress);
+});
 </script>
 
 <style scoped>
@@ -222,5 +255,11 @@ onMounted(loadSettings);
 .ad-row {
   display: flex;
   gap: 8px;
+}
+
+.ad-download {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 </style>

@@ -7,6 +7,7 @@ const { app, BrowserWindow, Tray, Menu, dialog, shell, net } = electron;
 const ipcMain = electron.ipcMain;
 const path = require('path');
 const fs = require('fs');
+const { spawn, execFileSync } = require('child_process');
 const Store = require('electron-store');
 const dutyCore = require('./duty-core');
 
@@ -267,6 +268,21 @@ const GITHUB_REPO = 'AutoDuty-desktop';
 // GitHub 文件加速代理（可选，形如 https://gh-proxy.net/ ；留空则直连）
 const GITHUB_PROXY = '';
 
+// 判断运行形态：安装版（存在 NSIS 卸载注册表项）下载 exe 安装包，否则（便携版/开发版）下载 zip
+function isInstalledVersion() {
+  if (!app.isPackaged) return false;
+  try {
+    execFileSync(
+      'reg',
+      ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\com.hrc090.autoduty'],
+      { stdio: 'pipe' }
+    );
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function fetchGitHubRelease(timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -282,7 +298,10 @@ async function fetchGitHubRelease(timeoutMs = 8000) {
     if (!release) return { version: '', url: '', note: '' };
     const tag = String(release.tag_name || '').trim();
     const version = tag.replace(/^[vV]/, '');
-    const asset = (release.assets && release.assets[0]) || null;
+    // 便携版下载 zip，安装版下载 exe 安装包
+    const assets = release.assets || [];
+    const kindPattern = isInstalledVersion() ? /\.exe$/i : /\.zip$/i;
+    const asset = assets.find((a) => kindPattern.test(a.name || '')) || assets[0] || null;
     const githubUrl = (asset && asset.browser_download_url) || release.zipball_url || '';
     const url = githubUrl ? (GITHUB_PROXY ? GITHUB_PROXY + githubUrl : githubUrl) : '';
     const note = String(release.body || '').split('\n')[0].trim();
@@ -312,27 +331,98 @@ async function checkForUpdate(manual) {
   return lastUpdateCheck;
 }
 
-// 下载更新包到「下载」目录，完成后打开所在文件夹
+// 下载更新包到「下载」目录，实时推送进度，完成后打开所在文件夹
 async function downloadUpdate(url) {
   if (!url) return { success: false, message: '没有可用的更新地址' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 600000); // 10 分钟超时，避免网络挂起无反馈
   try {
     const dir = app.getPath('downloads');
     const name = (path.basename(url.split('?')[0]) || 'autoduty-update.zip');
     const dest = path.join(dir, name);
-    const res = await net.fetch(url);
+    const res = await net.fetch(url, { signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(dest, buf);
-    shell.openPath(dir);
+    const total = parseInt(res.headers.get('content-length') || '0', 10) || 0;
+    const chunks = [];
+    let received = 0;
+    let lastSent = -1;
+    if (res.body) {
+      for await (const chunk of res.body) {
+        const buf = Buffer.from(chunk);
+        chunks.push(buf);
+        received += buf.length;
+        const percent = total > 0 ? Math.floor((received / total) * 100) : -1;
+        if (percent !== lastSent) {
+          lastSent = percent;
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('update:progress', { received, total, percent });
+          }
+        }
+      }
+    }
+    fs.writeFileSync(dest, Buffer.concat(chunks));
     return { success: true, path: dest };
   } catch (e) {
     return { success: false, message: `下载失败：${e.message}` };
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+// 立即安装：安装版启动 exe 安装程序；便携版解压 zip 后启动，随后退出当前应用
+function launchInstaller(dest) {
+  if (isInstalledVersion()) {
+    const cp = spawn(dest, [], { detached: true, stdio: 'ignore' });
+    cp.unref();
+    setTimeout(() => app.quit(), 1500);
+    return;
+  }
+  // 便携版：解压 zip 到下载目录下同名文件夹后启动
+  const targetDir = path.join(path.dirname(dest), path.basename(dest, path.extname(dest)));
+  const exePath = path.join(targetDir, 'AutoDuty.exe');
+  const tryLaunch = () => {
+    if (fs.existsSync(exePath)) {
+      // 带 --duty-update 启动新版：跳过单实例锁，与旧实例短暂并存后由旧实例退出让位
+      spawn(exePath, ['--duty-update'], { detached: true, stdio: 'ignore' }).unref();
+      setTimeout(() => app.quit(), 1200);
+    } else {
+      shell.openPath(path.dirname(dest));
+    }
+  };
+  if (fs.existsSync(exePath)) {
+    tryLaunch();
+    return;
+  }
+  // 用 -EncodedCommand 传命令，绕开 Node 在 Windows 上的参数引号转义问题。
+  // 注意：解压进程不能带 detached:true，否则 powershell 会不执行命令直接退出。
+  const expandCmd =
+    `Expand-Archive -LiteralPath '${String(dest).replace(/'/g, "''")}' ` +
+    `-DestinationPath '${String(targetDir).replace(/'/g, "''")}' -Force`;
+  const encoded = Buffer.from(expandCmd, 'utf16le').toString('base64');
+  const cp = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-EncodedCommand', encoded],
+    { stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+  cp.stdout.on('data', () => {}); // 丢弃进度输出，避免管道填满阻塞子进程
+  cp.stderr.on('data', (d) => { if (d && d.length) console.error('[update:expand]', String(d)); });
+  cp.on('error', (e) => console.error('[update:expand] spawn error:', e));
+  cp.on('exit', tryLaunch);
 }
 
 ipcMain.handle('update:check', (_, manual) => checkForUpdate(manual !== false));
 
 ipcMain.handle('update:download', (_, url) => downloadUpdate(url));
+
+ipcMain.handle('update:install', (_, dest) => {
+  if (!dest || !fs.existsSync(dest)) return { success: false, message: '安装包不存在' };
+  try {
+    launchInstaller(dest);
+    return { success: true, message: '正在启动安装…' };
+  } catch (e) {
+    return { success: false, message: `启动安装失败：${e.message}` };
+  }
+});
 
 // 供渲染层读取当前版本与最近一次检查结果
 ipcMain.handle('update:status', () => ({
@@ -486,8 +576,9 @@ ipcMain.handle('window:close', () => {
 
 // ==================== 应用生命周期 ====================
 
-// 单实例锁，确保只有一个应用运行
-const gotTheLock = app.requestSingleInstanceLock();
+// 单实例锁，确保只有一个应用运行。
+// 通过 --duty-update 启动的新版实例跳过锁，与即将退出的旧实例短暂并存，接管运行。
+const gotTheLock = process.argv.includes('--duty-update') ? true : app.requestSingleInstanceLock();
 
 if (!gotTheLock) {
   app.quit();

@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('autoduty', {
   // 软件更新
   checkUpdate: (manual) => ipcRenderer.invoke('update:check', manual),
   downloadUpdate: (url) => ipcRenderer.invoke('update:download', url),
+  installUpdate: (dest) => ipcRenderer.invoke('update:install', dest),
   updateStatus: () => ipcRenderer.invoke('update:status'),
 
   // 窗口控制
@@ -45,5 +46,8 @@ contextBridge.exposeInMainWorld('autoduty', {
   },
   onUpdateAvailable: (callback) => {
     ipcRenderer.on('update:available', (_, info) => callback(info));
+  },
+  onUpdateProgress: (callback) => {
+    ipcRenderer.on('update:progress', (_, info) => callback(info));
   },
 });
