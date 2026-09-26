@@ -26,6 +26,15 @@
         <ToggleSwitch Header="开机自启动" :IsOn="settings.autoStart" @update:IsOn="settings.autoStart = $event" />
         <ToggleSwitch Header="启动时隐藏主界面" :IsOn="settings.startHidden" @update:IsOn="settings.startHidden = $event" />
         <ToggleSwitch Header="注册 duty:// URL 协议" :IsOn="settings.registerProtocol" @update:IsOn="settings.registerProtocol = $event" />
+
+        <div class="ad-field">
+          <TextBlock class="ad-label" Text="外观主题" FontSize="14" />
+          <select class="ad-input ad-select" :value="settings.theme" @change="onThemeChange">
+            <option value="system">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </div>
       </Border>
 
       <Border class="ad-card">
@@ -34,6 +43,29 @@
         <TextBlock class="ad-hint" Text="更新源：GitHub Releases（hrc-090/AutoDuty-desktop）" FontSize="12" />
 
         <ToggleSwitch Header="启动时自动检查更新" :IsOn="settings.autoUpdate" @update:IsOn="settings.autoUpdate = $event" />
+
+        <div class="ad-field">
+          <TextBlock class="ad-label" Text="GitHub 加速节点" FontSize="14" />
+          <select class="ad-input ad-select" v-model="settings.updateProxy">
+            <option value="">自动测速（下载时自动选择最快节点）</option>
+            <option value="direct">直连（不使用加速）</option>
+            <option v-for="n in proxyNodes" :key="n.url" :value="n.url">{{ n.label }}</option>
+          </select>
+          <TextBlock class="ad-hint" Text="加速节点来自 github-proxy 镜像列表，用于加速更新包下载" FontSize="12" />
+          <div class="ad-row">
+            <Button Style="DefaultButtonStyle" Content="节点测速" @Click="onTestSpeed" :IsEnabled="!speedTesting" />
+          </div>
+          <TextBlock v-if="speedTesting" class="ad-hint" Text="正在测速，最多约 8 秒…" FontSize="12" />
+          <div v-else-if="speedResults.length" class="ad-speed-list">
+            <div v-for="(r, i) in speedResults" :key="r.url || 'direct'" class="ad-speed-item">
+              <span class="ad-speed-rank">{{ i + 1 }}</span>
+              <span class="ad-speed-name">{{ r.label }}</span>
+              <span class="ad-speed-value" :class="r.ok ? 'is-ok' : 'is-bad'">
+                {{ r.ok ? (r.speed / 1048576).toFixed(2) + ' MB/s' : '不可用' }}
+              </span>
+            </div>
+          </div>
+        </div>
 
         <TextBlock class="ad-label" Text="当前版本" FontSize="14" />
         <TextBlock class="ad-version" :Text="currentVersion" FontSize="14" />
@@ -49,6 +81,9 @@
         <div v-if="downloadState === 'downloading'" class="ad-download">
           <ProgressBar :Value="downloadProgress" Maximum="100" MinHeight="4" />
           <TextBlock class="ad-hint" :Text="`正在下载更新包… ${downloadProgress}%`" FontSize="12" />
+          <div class="ad-row">
+            <Button Style="DefaultButtonStyle" Content="取消下载" @Click="onCancelDownload" />
+          </div>
         </div>
       </Border>
 
@@ -68,6 +103,7 @@ import ToggleSwitch from '@winui/components/ToggleSwitch.vue';
 import TextBox from '@winui/components/TextBox.vue';
 import { useAutoduty } from '../useAutoduty';
 import { showToast } from '../toast';
+import { applyTheme } from '../theme';
 
 const api = useAutoduty();
 const settings = reactive({
@@ -78,6 +114,8 @@ const settings = reactive({
   startHidden: false,
   registerProtocol: true,
   autoUpdate: true,
+  updateProxy: '',
+  theme: 'system',
 });
 const currentVersion = ref('-');
 const updateResult = ref('');
@@ -85,6 +123,9 @@ const updateUrl = ref('');
 const downloadState = ref('idle'); // idle | downloading | done | error
 const downloadProgress = ref(0);
 const downloadedPath = ref('');
+const proxyNodes = ref([]);
+const speedResults = ref([]);
+const speedTesting = ref(false);
 
 async function loadSettings() {
   if (!api) return;
@@ -97,7 +138,19 @@ async function loadSettings() {
   settings.startHidden = config.startHidden;
   settings.registerProtocol = config.registerProtocol;
   settings.autoUpdate = config.autoUpdate;
+  settings.updateProxy = config.updateProxy || '';
+  settings.theme = config.theme || 'system';
   currentVersion.value = config.currentVersion || '-';
+}
+
+async function loadProxyList() {
+  if (!api) return;
+  try {
+    const list = await api.getProxyList();
+    proxyNodes.value = Array.isArray(list) ? list : [];
+  } catch (e) {
+    proxyNodes.value = [];
+  }
 }
 
 async function onSave() {
@@ -110,8 +163,18 @@ async function onSave() {
     startHidden: settings.startHidden,
     registerProtocol: settings.registerProtocol,
     autoUpdate: settings.autoUpdate,
+    updateProxy: settings.updateProxy,
+    theme: settings.theme,
   });
+  applyTheme(settings.theme);
   showToast('设置已保存');
+}
+
+// 主题仅在用户手动选择时即时生效（加载配置/打开设置页不触发主题切换）
+function onThemeChange(e) {
+  const v = e.target.value;
+  settings.theme = v;
+  if (v) applyTheme(v);
 }
 
 async function onCheckUpdate() {
@@ -132,6 +195,27 @@ async function onDownloadUpdate() {
   } else {
     downloadState.value = 'error';
     showToast(res?.message || '下载失败');
+  }
+}
+
+async function onCancelDownload() {
+  if (!api) return;
+  const r = await api.cancelDownload();
+  showToast(r?.success ? '正在取消下载…' : (r?.message || '取消失败'));
+}
+
+async function onTestSpeed() {
+  if (!api) return;
+  speedTesting.value = true;
+  speedResults.value = [];
+  try {
+    const res = await api.testProxySpeed(updateUrl.value || '');
+    speedResults.value = Array.isArray(res) ? res : [];
+  } catch (e) {
+    speedResults.value = [];
+    showToast('测速失败：' + (e?.message || e));
+  } finally {
+    speedTesting.value = false;
   }
 }
 
@@ -174,6 +258,7 @@ function renderUpdateResult(r) {
 
 onMounted(() => {
   loadSettings();
+  loadProxyList();
   if (api?.onUpdateProgress) api.onUpdateProgress(onUpdateProgress);
 });
 </script>
@@ -246,6 +331,63 @@ onMounted(() => {
 
 .ad-input:focus {
   border-color: var(--accent-base);
+}
+
+.ad-select {
+  max-width: 420px;
+  height: 38px;
+  cursor: pointer;
+}
+
+.ad-speed-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--card-stroke);
+  border-radius: var(--ControlCornerRadius, 4px);
+  background: var(--card-bg-secondary);
+}
+
+.ad-speed-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--card-stroke);
+  font-size: 13px;
+}
+
+.ad-speed-item:last-child {
+  border-bottom: none;
+}
+
+.ad-speed-rank {
+  width: 22px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ad-speed-name {
+  flex: 1;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ad-speed-value {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ad-speed-value.is-ok {
+  color: var(--accent-base);
+}
+
+.ad-speed-value.is-bad {
+  color: var(--text-disabled);
 }
 
 .ad-number {

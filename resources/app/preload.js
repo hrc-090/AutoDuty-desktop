@@ -35,6 +35,9 @@ contextBridge.exposeInMainWorld('autoduty', {
   downloadUpdate: (url) => ipcRenderer.invoke('update:download', url),
   installUpdate: (dest) => ipcRenderer.invoke('update:install', dest),
   updateStatus: () => ipcRenderer.invoke('update:status'),
+  getProxyList: () => ipcRenderer.invoke('update:proxyList'),
+  testProxySpeed: (url) => ipcRenderer.invoke('update:testSpeed', url),
+  cancelDownload: () => ipcRenderer.invoke('update:cancel'),
 
   // 窗口控制
   minimize: () => ipcRenderer.invoke('window:minimize'),

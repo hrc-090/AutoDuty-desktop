@@ -5,22 +5,19 @@
     <title>AutoDuty 值日提醒</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script>
-      // 跟随系统深浅色主题（WinUIonWeb 的 token 定义在 html.theme-light / html.theme-dark）
+      // 首次绘制前按系统深浅色设置主题类，避免白屏/闪色。
+      // prefers-color-scheme 跟随主进程 nativeTheme.themeSource（theme 配置），
+      // 后续由 src/autoduty/theme.js 接管（含系统模式监听与手动覆盖）。
       (function () {
-        var apply = function (dark) {
-          var el = document.documentElement;
-          el.classList.toggle('theme-dark', dark);
-          el.classList.toggle('theme-light', !dark);
-        };
-        var m = window.matchMedia('(prefers-color-scheme: dark)');
-        apply(m.matches);
-        if (m.addEventListener) m.addEventListener('change', function (e) { apply(e.matches); });
-        else if (m.addListener) m.addListener(function (e) { apply(e.matches); });
+        var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var el = document.documentElement;
+        el.classList.toggle('theme-dark', dark);
+        el.classList.toggle('theme-light', !dark);
       })();
     </script>
+  <script type="module" src="/src/autoduty/main.ts"></script>
 </head>
 <body>
     <div id="app"></div>
-    <script type="module" src="/src/autoduty/main.ts"></script>
 </body>
 </html>

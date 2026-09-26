@@ -3,11 +3,11 @@
  */
 
 const electron = require('electron');
-const { app, BrowserWindow, Tray, Menu, dialog, shell, net } = electron;
+const { app, BrowserWindow, Tray, Menu, dialog, shell, net, nativeTheme } = electron;
 const ipcMain = electron.ipcMain;
 const path = require('path');
 const fs = require('fs');
-const { spawn, execFileSync } = require('child_process');
+const { spawn, execFileSync, execFile } = require('child_process');
 const Store = require('electron-store');
 const dutyCore = require('./duty-core');
 
@@ -67,14 +67,44 @@ const store = new Store({
     startHidden: false,
     registerProtocol: true,
     autoUpdate: true,
+    updateProxy: '', // GitHub 加速节点：''=自动测速 | 'direct'=直连 | 具体节点 url
+    theme: 'system', // 'system' | 'light' | 'dark'
   },
 });
 
+// 安装版旧数据目录（exe 旁 /data）→ userData 的迁移标志，避免重复扫描
+let legacyMigrated = false;
+
+// 数据目录：安装版使用 userData（AppData\Roaming\AutoDuty），
+// 避免 Program Files 只读权限导致保存失败；开发版用项目内 data 目录。
 function getDataDir() {
   if (app.isPackaged) {
-    return path.join(path.dirname(app.getPath('exe')), 'data');
+    const dir = app.getPath('userData');
+    if (!legacyMigrated) {
+      legacyMigrated = true;
+      fs.mkdirSync(dir, { recursive: true });
+      migrateLegacyData(dir);
+    }
+    return dir;
   }
   return path.join(__dirname, 'data');
+}
+
+// 将安装版旧位置（exe 旁 /data）的表格数据复制到新数据目录，仅补缺不覆盖
+function migrateLegacyData(dir) {
+  try {
+    const legacy = path.join(path.dirname(app.getPath('exe')), 'data');
+    if (legacy === dir || !fs.existsSync(legacy)) return;
+    for (const name of ['值日表.xlsx', 'aliases.xlsx']) {
+      const src = path.join(legacy, name);
+      const dst = path.join(dir, name);
+      if (fs.existsSync(src) && !fs.existsSync(dst)) {
+        fs.copyFileSync(src, dst);
+      }
+    }
+  } catch (e) {
+    // 迁移失败不影响启动，数据目录仍可用
+  }
 }
 
 // ==================== 开机自启动 ====================
@@ -135,6 +165,19 @@ function createWindow(showWindow = true) {
     e.preventDefault();
     mainWindow.hide();
   });
+}
+
+// 原生窗口管理按钮（最小化/最大化/关闭）跟随深浅色主题：
+// 深色下用白色符号，浅色下用深色符号（否则深色模式黑图标不可见）
+function applyTitleBarOverlayTheme() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.setTitleBarOverlay({
+      color: nativeTheme.shouldUseDarkColors ? '#FFFFFF' : '#1F1F1F',
+    });
+  } catch (e) {
+    // 当前环境不支持 setTitleBarOverlay 时静默忽略
+  }
 }
 
 function createTray() {
@@ -223,6 +266,8 @@ ipcMain.handle('config:get', () => ({
   startHidden: store.get('startHidden', false),
   registerProtocol: store.get('registerProtocol', true),
   autoUpdate: store.get('autoUpdate', true),
+  updateProxy: store.get('updateProxy', ''),
+  theme: store.get('theme', 'system'),
   currentVersion: CURRENT_VERSION,
 }));
 
@@ -240,6 +285,14 @@ ipcMain.handle('config:set', (_, config) => {
     updateProtocolRegistration(config.registerProtocol);
   }
   if (config.autoUpdate !== undefined) store.set('autoUpdate', config.autoUpdate);
+  if (config.updateProxy !== undefined) store.set('updateProxy', config.updateProxy);
+  if (config.theme !== undefined) {
+    store.set('theme', config.theme);
+    // nativeTheme.themeSource 驱动 Mica 背景与渲染层 prefers-color-scheme
+    nativeTheme.themeSource = config.theme === 'light' || config.theme === 'dark'
+      ? config.theme
+      : 'system';
+  }
   startSchedule();
   return true;
 });
@@ -267,6 +320,45 @@ const GITHUB_OWNER = 'hrc-090';
 const GITHUB_REPO = 'AutoDuty-desktop';
 // GitHub 文件加速代理（可选，形如 https://gh-proxy.net/ ；留空则直连）
 const GITHUB_PROXY = '';
+// 多线程分片下载并发数
+const THREADS = 4;
+// GitHub 下载加速镜像节点（来源 https://www.moretools.app/zh-CN/github-proxy ）。
+// 每个节点均为「前缀式」代理：直接拼接在原始 GitHub 下载 URL 之前。
+// '' = 自动测速 | 'direct' = 直连（不使用加速）
+const GITHUB_PROXY_NODES = [
+  { url: 'https://gh-proxy.net/', label: 'gh-proxy.net' },
+  { url: 'https://github.cnxiaobai.com/', label: 'github.cnxiaobai.com' },
+  { url: 'https://hub.gitmirror.com/', label: 'hub.gitmirror.com' },
+  { url: 'https://www.5555.cab/', label: 'www.5555.cab' },
+  { url: 'https://git.tangbai.cc/', label: 'git.tangbai.cc' },
+  { url: 'https://gh.ddlc.top/', label: 'gh.ddlc.top' },
+  { url: 'https://ghproxy.xiaopa.cc/', label: 'ghproxy.xiaopa.cc' },
+  { url: 'https://ghproxy.cfd/', label: 'ghproxy.cfd' },
+  { url: 'https://ghproxy.cc/', label: 'ghproxy.cc' },
+  { url: 'https://ghproxy.monkeyray.net/', label: 'ghproxy.monkeyray.net' },
+  { url: 'https://cf.ghproxy.cc/', label: 'cf.ghproxy.cc' },
+  { url: 'https://gitproxy.mrhjx.cn/', label: 'gitproxy.mrhjx.cn' },
+  { url: 'https://gh.xxooo.cf/', label: 'gh.xxooo.cf' },
+  { url: 'https://github.xxlab.tech/', label: 'github.xxlab.tech' },
+  { url: 'https://ghproxy.1888866.xyz/', label: 'ghproxy.1888866.xyz' },
+  { url: 'https://github.mlmle.cn/', label: 'github.mlmle.cn' },
+  { url: 'https://fastgit.cc/', label: 'fastgit.cc' },
+  { url: 'https://gh.1k.ink/', label: 'gh.1k.ink' },
+  { url: 'https://github.boringhex.top/', label: 'github.boringhex.top' },
+  { url: 'https://ghfast.top/', label: 'ghfast.top' },
+  { url: 'https://y.whereisdoge.work/', label: 'y.whereisdoge.work' },
+  { url: 'https://ghproxy.imciel.com/', label: 'ghproxy.imciel.com' },
+  { url: 'https://gh.jdck.fun/', label: 'gh.jdck.fun' },
+  { url: 'https://xiaomo-station.top/', label: 'xiaomo-station.top' },
+  { url: 'https://gh.monlor.com/', label: 'gh.monlor.com' },
+  { url: 'https://g.blfrp.cn/', label: 'g.blfrp.cn' },
+  { url: 'https://gh.con.sh/', label: 'gh.con.sh' },
+  { url: 'https://gh.b52m.cn/', label: 'gh.b52m.cn' },
+  { url: 'https://github.dpik.top/', label: 'github.dpik.top' },
+  { url: 'https://github.geekery.cn/', label: 'github.geekery.cn' },
+  { url: 'https://gh.halonice.com/', label: 'gh.halonice.com' },
+  { url: 'https://github.limoruirui.com/', label: 'github.limoruirui.com' },
+];
 
 // 判断运行形态：安装版（存在 NSIS 卸载注册表项）下载 exe 安装包，否则（便携版/开发版）下载 zip
 function isInstalledVersion() {
@@ -331,43 +423,303 @@ async function checkForUpdate(manual) {
   return lastUpdateCheck;
 }
 
-// 下载更新包到「下载」目录，实时推送进度，完成后打开所在文件夹
-async function downloadUpdate(url) {
-  if (!url) return { success: false, message: '没有可用的更新地址' };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 600000); // 10 分钟超时，避免网络挂起无反馈
+// 系统是否带 curl（Windows 10 及以上默认内置；其 schannel 网络栈在本机下载明显更快）
+function hasCurl() {
   try {
-    const dir = app.getPath('downloads');
-    const name = (path.basename(url.split('?')[0]) || 'autoduty-update.zip');
-    const dest = path.join(dir, name);
+    execFileSync('where', ['curl'], { stdio: 'pipe' });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// 获取远程文件大小（用于进度计算与分片）
+function getRemoteSize(url) {
+  return new Promise((resolve) => {
+    execFile('curl.exe', ['-sIL', '--ssl-no-revoke', url], { timeout: 20000 }, (err, stdout) => {
+      if (err) return resolve(0);
+      // 302 中间跳转可能带 content-length: 0，取最后一个（最终目标）的值
+      const matches = String(stdout).match(/content-length:\s*(\d+)/gi);
+      if (matches && matches.length) {
+        const last = matches[matches.length - 1].replace(/[^\d]/g, '');
+        resolve(parseInt(last, 10) || 0);
+      } else {
+        resolve(0);
+      }
+    });
+  });
+}
+
+// 用 curl 下载指定 Range 区间到分片文件；procs 传入后会把子进程登记进去，
+// 供取消下载时统一 kill（渲染层调用 update:cancel 会清空该列表）
+function downloadRange(url, start, end, outFile, timeoutMs, procs) {
+  return new Promise((resolve) => {
+    const range = end === null ? `${start}-` : `${start}-${end}`;
+    const cp = spawn(
+      'curl.exe',
+      ['-sL', '--ssl-no-revoke', '--fail', '--retry', '1', '-r', range, '-o', outFile, url],
+      { stdio: 'ignore' }
+    );
+    if (procs) procs.push(cp);
+    const t = setTimeout(() => { try { cp.kill(); } catch (e) {} }, timeoutMs);
+    const done = () => {
+      clearTimeout(t);
+      if (procs) {
+        const i = procs.indexOf(cp);
+        if (i >= 0) procs.splice(i, 1);
+      }
+      resolve();
+    };
+    cp.on('exit', done);
+    cp.on('error', done);
+  });
+}
+
+// 多线程分片下载：把文件按 Range 分成 THREADS 段并行下载，再按顺序合并。
+// 大小不符（节点不支持 Range / 下载失败）的分片会重试一次；仍失败则返回分片路径列表，成功返回 null。
+async function multiThreadDownload(url, total, tmp, state) {
+  if (state && state.canceled) return [];
+  const segSize = Math.ceil(total / THREADS);
+  const parts = [];
+  const timeoutMs = 900000; // 单个分片最长 15 分钟（慢分片 5 分钟被 kill 会导致整体失败）
+  for (let i = 0; i < THREADS; i++) {
+    const start = i * segSize;
+    const end = i === THREADS - 1 ? null : Math.min(start + segSize - 1, total - 1);
+    const file = `${tmp}.${i}`;
+    const expected = end === null ? total - start : end - start + 1;
+    parts.push({ file, start, end, expected });
+  }
+  const procs = state && state.procs;
+  // 第一轮：全部分片并行下载
+  await Promise.all(parts.map((p) => downloadRange(url, p.start, p.end, p.file, timeoutMs, procs)));
+  // 第二轮：对大小不符或缺失的分片重试一次（取消后不再拉起新的子进程）
+  for (const p of parts) {
+    if (state && state.canceled) break;
+    if (!fs.existsSync(p.file) || fs.statSync(p.file).size !== p.expected) {
+      await downloadRange(url, p.start, p.end, p.file, timeoutMs, procs);
+    }
+  }
+  // 校验分片
+  for (const p of parts) {
+    if (!fs.existsSync(p.file) || fs.statSync(p.file).size !== p.expected) return parts;
+  }
+  // 按顺序合并分片
+  try {
+    const out = fs.createWriteStream(tmp);
+    out.on('error', () => {}); // 打开失败等流错误由 write 回调接管，避免主进程未捕获异常
+    for (const p of parts) {
+      const data = fs.readFileSync(p.file);
+      await new Promise((res, rej) => out.write(data, (e) => (e ? rej(e) : res())));
+      fs.unlinkSync(p.file);
+    }
+    await new Promise((res, rej) => out.end((e) => (e ? rej(e) : res())));
+  } catch (e) {
+    return parts;
+  }
+  if (!fs.existsSync(tmp) || fs.statSync(tmp).size !== total) return parts;
+  return null; // 成功
+}
+
+// 无 curl 环境的单线程回退下载（边下载边写 tmp，进度由外层轮询读取）
+async function downloadFallback(url, dest, tmp, setTotal, state) {
+  const controller = new AbortController();
+  if (state) state.abort = controller;
+  const timer2 = setTimeout(() => controller.abort(), 600000);
+  try {
     const res = await net.fetch(url, { signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const total = parseInt(res.headers.get('content-length') || '0', 10) || 0;
-    const chunks = [];
-    let received = 0;
-    let lastSent = -1;
+    setTotal(total);
+    const out = fs.createWriteStream(tmp);
     if (res.body) {
       for await (const chunk of res.body) {
+        if (state && state.canceled) throw new Error('aborted');
         const buf = Buffer.from(chunk);
-        chunks.push(buf);
-        received += buf.length;
-        const percent = total > 0 ? Math.floor((received / total) * 100) : -1;
-        if (percent !== lastSent) {
-          lastSent = percent;
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('update:progress', { received, total, percent });
-          }
-        }
+        await new Promise((resolve, reject) => out.write(buf, (e) => (e ? reject(e) : resolve())));
       }
     }
-    fs.writeFileSync(dest, Buffer.concat(chunks));
+    await new Promise((resolve, reject) => out.end((e) => (e ? reject(e) : resolve())));
+    if (fs.existsSync(dest)) fs.unlinkSync(dest);
+    fs.renameSync(tmp, dest);
     return { success: true, path: dest };
   } catch (e) {
-    return { success: false, message: `下载失败：${e.message}` };
+    if (fs.existsSync(tmp)) { try { fs.unlinkSync(tmp); } catch (e2) {} }
+    return { success: false, message: state && state.canceled ? '已取消下载' : `下载失败：${e.message}` };
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer2);
   }
 }
+
+// 全局下载状态：供 update:cancel 取消当前正在进行的下载
+let activeDownload = null;
+
+// 下载更新包到「下载」目录，按文件大小实时推送进度。
+// 节点选择（updateProxy）：''=自动测速选最快节点 | 'direct'=直连 | 具体节点 url=只用该节点；
+// 无 curl 时回退单线程 net.fetch；下载过程中可被 update:cancel 取消。
+async function downloadUpdate(url) {
+  if (!url) return { success: false, message: '没有可用的更新地址' };
+  const dir = app.getPath('downloads');
+  const name = (path.basename(url.split('?')[0]) || 'autoduty-update.zip');
+  const dest = path.join(dir, name);
+  const tmp = dest + '.part';
+  const base = path.basename(tmp);
+  // 本次下载的全局状态：canceled 标记 + 正在运行的 curl 子进程 + 回退下载的 abort
+  const state = { canceled: false, procs: [], abort: null };
+  activeDownload = state;
+  let currentTotal = 0;
+  let chunkFiles = [];
+
+  const setTotal = (t) => { currentTotal = t; };
+
+  // 清理本次下载产生的全部临时文件（tmp / 分片 / 探速文件）
+  const cleanup = () => {
+    for (const cp of state.procs) { try { cp.kill(); } catch (e) {} }
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (f.startsWith(base) && f !== name) {
+          try { fs.unlinkSync(path.join(dir, f)); } catch (e) {}
+        }
+      }
+    } catch (e) {}
+  };
+
+  // 进度轮询：统计已写入的字节数（分片阶段累加分片，合并阶段读 tmp）
+  const timer = setInterval(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      let size = 0;
+      if (fs.existsSync(tmp)) {
+        try { size = fs.statSync(tmp).size; } catch (e) {}
+      } else {
+        for (const f of chunkFiles) {
+          try { if (fs.existsSync(f)) size += fs.statSync(f).size; } catch (e) {}
+        }
+      }
+      const percent = currentTotal > 0 ? Math.floor((size / currentTotal) * 100) : -1;
+      mainWindow.webContents.send('update:progress', { received: size, total: currentTotal, percent });
+    }
+  }, 800);
+
+  try {
+    // 清理上次残留的临时文件（.part 及其分片/探速文件），避免被占用导致合并时 EPERM
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+      for (const f of fs.readdirSync(dir)) {
+        if (f.startsWith(base) && f !== name) {
+          try { fs.unlinkSync(path.join(dir, f)); } catch (e) {}
+        }
+      }
+    } catch (e) {}
+
+    // 无 curl 时回退单线程下载（取消时内部会映射为「已取消下载」）
+    if (!hasCurl()) return await downloadFallback(url, dest, tmp, setTotal, state);
+
+    // 候选节点：按用户选择决定
+    const selected = store.get('updateProxy', '');
+    let candidates;
+    if (selected === 'direct') {
+      candidates = [url];
+    } else if (selected) {
+      candidates = [selected + url];
+    } else {
+      candidates = [url, ...GITHUB_PROXY_NODES.map((n) => n.url + url)];
+    }
+
+    let source = candidates[0];
+    if (candidates.length > 1) {
+      // 自动模式：并行探速，每个节点下载前 2MB，选最快可用的节点做正式下载
+      const probeSize = 2 * 1024 * 1024;
+      const probes = await Promise.all(candidates.map(async (cand, i) => {
+        const probeFile = `${tmp}.probe${i}`;
+        const started = Date.now();
+        await downloadRange(cand, 0, probeSize - 1, probeFile, 12000, state.procs);
+        let speed = 0;
+        try {
+          if (fs.existsSync(probeFile) && fs.statSync(probeFile).size === probeSize) {
+            speed = probeSize / Math.max(1, Date.now() - started);
+          }
+        } catch (e) {}
+        try { fs.unlinkSync(probeFile); } catch (e) {}
+        return { cand, speed };
+      }));
+      if (state.canceled) {
+        cleanup();
+        return { success: false, message: '已取消下载' };
+      }
+      const best = probes.reduce((a, b) => (b.speed > a.speed ? b : a), probes[0]);
+      if (best && best.speed > 0) source = best.cand;
+    }
+
+    const total = await getRemoteSize(source);
+    if (state.canceled) {
+      cleanup();
+      return { success: false, message: '已取消下载' };
+    }
+    let lastErr = total > 0 ? '' : '无法获取文件大小';
+    if (total > 0) {
+      setTotal(total);
+      chunkFiles = Array.from({ length: THREADS }, (_, i) => `${tmp}.${i}`);
+      const chunks = await multiThreadDownload(source, total, tmp, state);
+      if (state.canceled) {
+        cleanup();
+        return { success: false, message: '已取消下载' };
+      }
+      if (chunks === null) {
+        try {
+          if (fs.existsSync(dest)) fs.unlinkSync(dest);
+          fs.renameSync(tmp, dest);
+          return { success: true, path: dest };
+        } catch (e) {
+          return { success: false, message: `保存文件失败：${e.message}` };
+        }
+      }
+      // 正式下载失败：清理分片
+      for (const f of chunks) { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {} }
+      chunkFiles = [];
+      if (fs.existsSync(tmp)) { try { fs.unlinkSync(tmp); } catch (e) {} }
+      lastErr = `下载失败（${source}）`;
+    }
+    return { success: false, message: lastErr || '下载失败：所有节点均无法完成下载' };
+  } catch (e) {
+    return { success: false, message: state.canceled ? '已取消下载' : `下载失败：${e.message}` };
+  } finally {
+    clearInterval(timer);
+    if (activeDownload === state) activeDownload = null;
+  }
+}
+
+// 节点列表（供设置页「GitHub 加速节点」选择框）
+ipcMain.handle('update:proxyList', () => GITHUB_PROXY_NODES);
+
+// 对全部节点（含直连）并行小文件探速，返回按速度降序的结果。
+// url 有值时用真实更新地址探测，否则用 GitHub 首页作探测基准。
+ipcMain.handle('update:testSpeed', async (_, url) => {
+  const probeBase = url || 'https://github.com/';
+  const PROBE = 512 * 1024;
+  const TIMEOUT = 8000;
+  const nodes = [{ url: '', label: '直连' }, ...GITHUB_PROXY_NODES];
+  const results = await Promise.all(nodes.map(async (node, i) => {
+    const cand = node.url ? node.url + probeBase : probeBase;
+    const probeFile = path.join(app.getPath('temp'), `autoduty-probe-${Date.now()}-${i}.part`);
+    const started = Date.now();
+    await downloadRange(cand, 0, PROBE - 1, probeFile, TIMEOUT);
+    let size = 0;
+    try { if (fs.existsSync(probeFile)) size = fs.statSync(probeFile).size; } catch (e) {}
+    try { fs.unlinkSync(probeFile); } catch (e) {}
+    const speed = size > 0 ? size / Math.max(1, Date.now() - started) : 0;
+    return { url: node.url, label: node.label, speed, ok: size > 0 };
+  }));
+  results.sort((a, b) => b.speed - a.speed);
+  return results;
+});
+
+// 取消当前正在进行的下载
+ipcMain.handle('update:cancel', () => {
+  if (!activeDownload) return { success: false, message: '没有正在进行的下载' };
+  activeDownload.canceled = true;
+  for (const cp of activeDownload.procs) { try { cp.kill(); } catch (e) {} }
+  if (activeDownload.abort) { try { activeDownload.abort(); } catch (e) {} }
+  return { success: true };
+});
 
 // 立即安装：安装版启动 exe 安装程序；便携版解压 zip 后启动，随后退出当前应用
 function launchInstaller(dest) {
@@ -469,10 +821,14 @@ ipcMain.handle('duty:getAll', () => {
 });
 
 ipcMain.handle('duty:save', (_, data) => {
-  const dataDir = getDataDir();
-  const dutyPath = path.join(dataDir, '值日表.xlsx');
-  dutyCore.writeDutyTable(dutyPath, data);
-  return true;
+  try {
+    const dataDir = getDataDir();
+    const dutyPath = path.join(dataDir, '值日表.xlsx');
+    dutyCore.writeDutyTable(dutyPath, data);
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message || String(err) };
+  }
 });
 
 // 导入外部 xlsx 文件为值日表
@@ -547,10 +903,14 @@ ipcMain.handle('alias:getAll', () => {
 });
 
 ipcMain.handle('alias:save', (_, entries) => {
-  const dataDir = getDataDir();
-  const aliasPath = path.join(dataDir, 'aliases.xlsx');
-  dutyCore.writeAliasTable(aliasPath, entries);
-  return true;
+  try {
+    const dataDir = getDataDir();
+    const aliasPath = path.join(dataDir, 'aliases.xlsx');
+    dutyCore.writeAliasTable(aliasPath, entries);
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message || String(err) };
+  }
 });
 
 ipcMain.handle('duty:fillNames', () => {
@@ -586,12 +946,19 @@ if (!gotTheLock) {
   app.whenReady().then(() => {
     dutyCore.ensureDataFiles(getDataDir());
 
+    // 应用主题配置：驱动 Mica 背景与渲染层 prefers-color-scheme
+    const theme = store.get('theme', 'system');
+    nativeTheme.themeSource = theme === 'light' || theme === 'dark' ? theme : 'system';
+
     // 判断是否开机自启静默模式
     const isAutoStartHidden = process.argv.includes('--hidden');
     const startHidden = isAutoStartHidden || store.get('startHidden', false);
 
     // 创建窗口（静默模式不显示）
     createWindow(!startHidden);
+    // 窗口管理按钮跟随主题；nativeTheme 变化（系统或设置切换）时自动刷新
+    applyTitleBarOverlayTheme();
+    nativeTheme.on('updated', applyTitleBarOverlayTheme);
     createTray();
     startSchedule();
     autoCheckUpdate();

@@ -1,6 +1,6 @@
 {
   "name": "autoduty",
-  "version": "1.0.2",
+  "version": "1.0.0",
   "description": "值日安排自动化管理系统",
   "main": "main.js",
   "dependencies": {

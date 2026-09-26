@@ -41,3 +41,5 @@ release/
 builder/
 pkg-temp/
 updates/
+app.new.asar
+static-server.cjs

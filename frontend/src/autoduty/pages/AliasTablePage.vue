@@ -9,8 +9,10 @@
         </div>
       </div>
 
-      <!-- Excel 风格网格 -->
-      <div class="ad-sheet" ref="sheetEl"></div>
+      <!-- 触控表格：整表容器内滚动，表头固定，点击单元格直接编辑 -->
+      <div class="ad-sheet">
+        <TouchTable v-model:rows="aliasRows" :columns="cols" />
+      </div>
 
       <div class="ad-row">
         <Button Style="AccentButtonStyle" Content="保存别名表" @Click="onSave" />
@@ -20,78 +22,44 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref, onMounted } from 'vue';
 import ScrollViewer from '@winui/components/ScrollViewer.vue';
 import TextBlock from '@winui/components/TextBlock.vue';
 import Button from '@winui/components/Button.vue';
-import Spreadsheet from 'x-data-spreadsheet/src/index';
-import 'x-data-spreadsheet/dist/xspreadsheet.css';
-import zhCN from '../xspreadsheet-zh';
+import TouchTable from '../TouchTable.vue';
 import { useAutoduty } from '../useAutoduty';
 import { showToast } from '../toast';
 
-Spreadsheet.locale('zh-cn', zhCN);
-
 const api = useAutoduty();
-const sheetEl = ref(null);
-let sheet = null;
 
-// 别名表 entries [{name, alias}] → x-spreadsheet 数据（首行固定表头）
-function toSheetData(entries) {
-  const data = { rows: {} };
-  data.rows[1] = {
-    cells: {
-      1: { text: '中文名' },
-      2: { text: '别名' },
-    },
-  };
-  (entries || []).forEach((entry, r) => {
-    const cells = {};
-    const name = String(entry.name ?? '');
-    const alias = String(entry.alias ?? '');
-    if (name) cells[1] = { text: name };
-    if (alias) cells[2] = { text: alias };
-    data.rows[r + 2] = { cells };
-  });
-  return data;
-}
-
-// x-spreadsheet 数据 → entries [{name, alias}]
-function fromSheetData(data) {
-  const entries = [];
-  const rowKeys = Object.keys(data.rows || {})
-    .map(Number)
-    .filter((n) => Number.isFinite(n))
-    .sort((a, b) => a - b);
-  rowKeys.forEach((r) => {
-    if (r <= 1) return;
-    const cells = (data.rows[r] || {}).cells || {};
-    entries.push({
-      name: (cells[1] || {}).text ?? '',
-      alias: (cells[2] || {}).text ?? '',
-    });
-  });
-  return entries;
-}
+// 别名表固定两列：中文名 / 别名（行 = [name, alias]）
+const cols = [
+  { label: '中文名', type: 'text', placeholder: '如 张三' },
+  { label: '别名', type: 'text', placeholder: '如 zhang' },
+];
+const aliasRows = ref([]);
 
 async function loadAliasTable() {
-  if (!api || !sheet) return;
+  if (!api) return;
   const entries = await api.getAliasAll();
-  sheet.loadData(toSheetData(entries));
+  aliasRows.value = (entries || []).map((e) => [
+    String(e?.name ?? ''),
+    String(e?.alias ?? ''),
+  ]);
 }
 
 function addRow() {
-  if (!sheet) return;
-  const data = sheet.getData();
-  const lastRow = Math.max(...Object.keys(data.rows || {}).map(Number).filter(Number.isFinite), 1);
-  data.rows[lastRow + 1] = { cells: { 1: { text: '' }, 2: { text: '' } } };
-  sheet.loadData(data);
+  aliasRows.value.push(['', '']);
 }
 
 async function onSave() {
-  if (!api || !sheet) return;
-  const data = sheet.getData();
-  await api.saveAlias(fromSheetData(data));
+  if (!api) return;
+  const entries = aliasRows.value.map((r) => ({ name: r[0] || '', alias: r[1] || '' }));
+  const result = await api.saveAlias(entries);
+  if (result?.success === false) {
+    showToast('保存失败：' + (result.message || '未知错误'));
+    return;
+  }
   showToast('别名表已保存');
 }
 
@@ -113,29 +81,18 @@ async function onImport() {
   }
 }
 
-onMounted(() => {
-  sheet = new Spreadsheet(sheetEl.value, {
-    showToolbar: true,
-    showGrid: true,
-    showContextmenu: true,
-    view: {
-      showRowHeader: true,
-      showColHeader: true,
-    },
-    row: { len: 1000, height: 26 },
-    column: { len: 40, width: 140 },
-  });
-  loadAliasTable();
-});
-
-onBeforeUnmount(() => {
-  if (sheet) sheet.destroy?.();
-  sheet = null;
-});
+onMounted(loadAliasTable);
 </script>
 
 <style scoped>
 .ad-scroll {
+  height: 100%;
+}
+
+/* 自适应窗口：本页 ScrollViewer 的滚动内容高度设为视口高度（覆盖上游
+   .scroll-content 的 min-height:max-content），使 .ad-page 的百分比高度可解析，
+   .ad-sheet 的 flex:1 才能随窗口缩放填充剩余空间 */
+:global(.ad-scroll .win-scroll-viewer-viewport .scroll-content) {
   height: 100%;
 }
 
@@ -171,17 +128,14 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-/* Excel 网格容器：随窗口高度自适应（至少 440px，无上限） */
+/* 表格容器：占满工具栏/按钮之间的剩余高度，且不小于视口的 55%（触屏大屏体验） */
 .ad-sheet {
-  flex: 1 1 auto;
-  min-height: 440px;
+  flex: 1 1 0;
+  min-height: 55vh;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--card-stroke);
   border-radius: var(--ControlCornerRadius, 4px);
   overflow: hidden;
-  background: #fff;
-}
-
-:global(.ad-sheet .x-spreadsheet) {
-  background: #fff;
 }
 </style>

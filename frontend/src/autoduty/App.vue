@@ -150,6 +150,16 @@ onBeforeUnmount(() => {
   height: auto;
 }
 
+/* 内容区从 48px 标题栏下方开始，避免页面顶部工具栏（右上方按钮）被原生窗口管理按钮遮挡 */
+:deep(.win-nav-content-inner) {
+  padding-top: 48px !important;
+}
+
+/* 标题栏右侧预留约 138px 给原生窗口管理按钮（env(titlebar-area-width) 不可用时的兜底） */
+:deep(.win-titlebar) {
+  width: calc(100% - 138px) !important;
+}
+
 .ad-content {
   height: 100%;
   min-height: 0;
