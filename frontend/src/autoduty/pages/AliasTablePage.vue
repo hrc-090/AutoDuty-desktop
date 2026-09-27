@@ -11,7 +11,7 @@
 
       <!-- 触控表格：整表容器内滚动，表头固定，点击单元格直接编辑 -->
       <div class="ad-sheet">
-        <TouchTable v-model:rows="aliasRows" :columns="cols" />
+        <TouchTable v-model:rows="aliasRows" :columns="cols" storage-key="alias" />
       </div>
 
       <div class="ad-row">

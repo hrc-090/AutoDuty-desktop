@@ -48,8 +48,8 @@
           <TextBlock class="ad-label" Text="GitHub 加速节点" FontSize="14" />
           <select class="ad-input ad-select" v-model="settings.updateProxy">
             <option value="">自动测速（下载时自动选择最快节点）</option>
-            <option value="direct">直连（不使用加速）</option>
-            <option v-for="n in proxyNodes" :key="n.url" :value="n.url">{{ n.label }}</option>
+            <option value="direct">{{ nodeOptionLabel({ url: 'direct', label: '直连（不使用加速）' }) }}</option>
+            <option v-for="n in proxyNodes" :key="n.url" :value="n.url">{{ nodeOptionLabel(n) }}</option>
           </select>
           <TextBlock class="ad-hint" Text="加速节点来自 github-proxy 镜像列表，用于加速更新包下载" FontSize="12" />
           <div class="ad-row">
@@ -126,6 +126,15 @@ const downloadedPath = ref('');
 const proxyNodes = ref([]);
 const speedResults = ref([]);
 const speedTesting = ref(false);
+// 测速结果标注：下拉框选项实时显示节点速度（key：'direct' 或节点 url）
+const speedOf = ref({});
+
+// 节点下拉框选项文本：测速完成后附加速度 / 不可用标记
+function nodeOptionLabel(n) {
+  const r = speedOf.value[n.url];
+  if (!r) return n.label;
+  return r.ok ? `${n.label}（${(r.speed / 1048576).toFixed(2)} MB/s）` : `${n.label}（不可用）`;
+}
 
 async function loadSettings() {
   if (!api) return;
@@ -208,9 +217,15 @@ async function onTestSpeed() {
   if (!api) return;
   speedTesting.value = true;
   speedResults.value = [];
+  speedOf.value = {};
   try {
     const res = await api.testProxySpeed(updateUrl.value || '');
-    speedResults.value = Array.isArray(res) ? res : [];
+    const arr = Array.isArray(res) ? res : [];
+    speedResults.value = arr;
+    // 供下拉框标注：直连结果映射到 select 的 'direct' 值，其余按节点 url 对应
+    const map = {};
+    arr.forEach((r) => { map[r.url === '' ? 'direct' : r.url] = r; });
+    speedOf.value = map;
   } catch (e) {
     speedResults.value = [];
     showToast('测速失败：' + (e?.message || e));

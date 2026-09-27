@@ -28,7 +28,7 @@
 
       <!-- 触控表格：整表容器内滚动，表头固定，点击单元格直接编辑 -->
       <div class="ad-sheet">
-        <TouchTable v-model:rows="dutyRows" :columns="cols" />
+        <TouchTable v-model:rows="dutyRows" :columns="cols" storage-key="duty" />
       </div>
 
       <div class="ad-row">
@@ -72,13 +72,29 @@ const assignSkipWeekend = ref(true);
 async function loadDutyTable() {
   if (!api) return;
   const data = await api.getDutyAll();
-  headers.value = (data?.headers || []).map((h) => String(h ?? ''));
-  const w = headers.value.length;
-  dutyRows.value = (data?.rows || []).map((r) => {
+  const hdrs = (data?.headers || []).map((h) => String(h ?? ''));
+  const w = hdrs.length;
+  const rows = (data?.rows || []).map((r) => {
     const arr = (r || []).map((v) => String(v ?? ''));
     while (arr.length < w) arr.push('');
     return arr;
   });
+  // 日期列放到 A 列：表头与每行数据同步重排（保存即按此顺序落盘，
+  // 主进程按表头名称定位日期列，列位置变化不影响分配/查询逻辑）
+  const dateIdx = hdrs.findIndex((h) => /日期|时间/.test(h));
+  if (dateIdx > 0) {
+    const [dateHdr] = hdrs.splice(dateIdx, 1);
+    hdrs.unshift(dateHdr);
+    dutyRows.value = rows.map((r) => {
+      const arr = r.slice();
+      const [dv] = arr.splice(dateIdx, 1);
+      arr.unshift(dv ?? '');
+      return arr;
+    });
+  } else {
+    dutyRows.value = rows;
+  }
+  headers.value = hdrs;
 }
 
 function addRow() {

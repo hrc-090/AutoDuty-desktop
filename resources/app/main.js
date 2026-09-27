@@ -168,12 +168,16 @@ function createWindow(showWindow = true) {
 }
 
 // 原生窗口管理按钮（最小化/最大化/关闭）跟随深浅色主题：
-// 深色下用白色符号，浅色下用深色符号（否则深色模式黑图标不可见）
+// 深色下用白色符号，浅色下用深色符号（否则深色模式黑图标不可见）。
+// 注意：symbolColor 控制按钮符号颜色，color 是按钮区域底色（与 Mica 标题栏融合）。
 function applyTitleBarOverlayTheme() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   try {
+    const dark = nativeTheme.shouldUseDarkColors;
     mainWindow.setTitleBarOverlay({
-      color: nativeTheme.shouldUseDarkColors ? '#FFFFFF' : '#1F1F1F',
+      color: dark ? '#202020' : '#F3F3F3',
+      symbolColor: dark ? '#FFFFFF' : '#1F1F1F',
+      height: 48,
     });
   } catch (e) {
     // 当前环境不支持 setTitleBarOverlay 时静默忽略
@@ -626,12 +630,12 @@ async function downloadUpdate(url) {
 
     let source = candidates[0];
     if (candidates.length > 1) {
-      // 自动模式：并行探速，每个节点下载前 2MB，选最快可用的节点做正式下载
-      const probeSize = 2 * 1024 * 1024;
+      // 自动模式：并行探速，每个节点下载前 4MB，选最快可用的节点做正式下载
+      const probeSize = 4 * 1024 * 1024;
       const probes = await Promise.all(candidates.map(async (cand, i) => {
         const probeFile = `${tmp}.probe${i}`;
         const started = Date.now();
-        await downloadRange(cand, 0, probeSize - 1, probeFile, 12000, state.procs);
+        await downloadRange(cand, 0, probeSize - 1, probeFile, 15000, state.procs);
         let speed = 0;
         try {
           if (fs.existsSync(probeFile) && fs.statSync(probeFile).size === probeSize) {
@@ -690,22 +694,74 @@ async function downloadUpdate(url) {
 // 节点列表（供设置页「GitHub 加速节点」选择框）
 ipcMain.handle('update:proxyList', () => GITHUB_PROXY_NODES);
 
-// 对全部节点（含直连）并行小文件探速，返回按速度降序的结果。
-// url 有值时用真实更新地址探测，否则用 GitHub 首页作探测基准。
+// 快速验证地址可达（HEAD 成功即可，用于挑选探测基准）
+async function urlReachable(u) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    try {
+      const res = await net.fetch(u, { method: 'HEAD', signal: ctrl.signal, redirect: 'follow' });
+      return res.ok;
+    } finally {
+      clearTimeout(t);
+    }
+  } catch (e) {
+    return false;
+  }
+}
+
+// 挑选可用的探测基准：优先真实 Release 附件；其次仓库归档（main/master 分支各试）；
+// 最后回退 github 首页。逐个做可达性校验，避免基准地址 404 导致全节点测速为 0。
+async function resolveProbeBase(url) {
+  if (url && (await urlReachable(url))) return url;
+  const candidates = [];
+  try {
+    const info = await fetchGitHubRelease(8000);
+    if (info.url) candidates.push(info.url);
+  } catch (e) {}
+  candidates.push(
+    `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/archive/refs/heads/main.zip`,
+    `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/archive/refs/heads/master.zip`,
+    'https://github.com/'
+  );
+  for (const c of candidates) {
+    if (await urlReachable(c)) return c;
+  }
+  return 'https://github.com/';
+}
+
+// 探速下载：开放区间 -r 0- + --max-time，兼容不支持 Range 的节点；
+// 小文件（如首页）立即取完，大文件在超时窗口内测量持续吞吐。
+function probeRange(url, outFile, timeoutMs) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const cp = spawn(
+      'curl.exe',
+      ['-sL', '--ssl-no-revoke', '--fail', '-r', '0-', '--max-time', String(Math.max(1, Math.ceil(timeoutMs / 1000))), '-o', outFile, url],
+      { stdio: 'ignore' }
+    );
+    const done = (size) => resolve({ size, elapsed: Math.max(1, Date.now() - started) });
+    cp.on('exit', () => {
+      let size = 0;
+      try { if (fs.existsSync(outFile)) size = fs.statSync(outFile).size; } catch (e) {}
+      done(size);
+    });
+    cp.on('error', () => done(0));
+  });
+}
+
+// 对全部节点（含直连）并行探速，返回按速度降序的结果（保持快速，约 8 秒内）。
+// 探测基准经过可达性校验：真实 Release 附件 → 仓库归档 → github 首页。
 ipcMain.handle('update:testSpeed', async (_, url) => {
-  const probeBase = url || 'https://github.com/';
-  const PROBE = 512 * 1024;
+  const probeBase = await resolveProbeBase(url);
   const TIMEOUT = 8000;
   const nodes = [{ url: '', label: '直连' }, ...GITHUB_PROXY_NODES];
   const results = await Promise.all(nodes.map(async (node, i) => {
     const cand = node.url ? node.url + probeBase : probeBase;
     const probeFile = path.join(app.getPath('temp'), `autoduty-probe-${Date.now()}-${i}.part`);
-    const started = Date.now();
-    await downloadRange(cand, 0, PROBE - 1, probeFile, TIMEOUT);
-    let size = 0;
-    try { if (fs.existsSync(probeFile)) size = fs.statSync(probeFile).size; } catch (e) {}
-    try { fs.unlinkSync(probeFile); } catch (e) {}
-    const speed = size > 0 ? size / Math.max(1, Date.now() - started) : 0;
+    const { size, elapsed } = await probeRange(cand, probeFile, TIMEOUT);
+    try { if (fs.existsSync(probeFile)) fs.unlinkSync(probeFile); } catch (e) {}
+    const speed = size > 0 ? size / Math.max(1, elapsed) : 0;
     return { url: node.url, label: node.label, speed, ok: size > 0 };
   }));
   results.sort((a, b) => b.speed - a.speed);

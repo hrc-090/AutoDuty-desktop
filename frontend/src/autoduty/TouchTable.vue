@@ -7,8 +7,16 @@
         :key="'th' + c"
         class="tt-th"
         :class="{ 'tt-th-date': col.type === 'date' }"
+        :style="colStyle(c)"
       >
         <span class="tt-th-text">{{ col.label }}</span>
+        <div
+          v-if="resizable"
+          class="tt-resize"
+          :title="'拖动调整列宽，双击恢复默认'"
+          @pointerdown="startResize($event, c)"
+          @dblclick.stop.prevent="resetColWidth(c)"
+        ></div>
       </div>
     </div>
 
@@ -20,6 +28,7 @@
           :key="'td' + c"
           class="tt-td"
           :class="{ 'tt-td-date': col.type === 'date' }"
+          :style="colStyle(c)"
         >
           <!-- 日期列：自由文本（兼容 9/26、2026-09-26 等既有格式）+ 日历按钮（原生选择器） -->
           <template v-if="col.type === 'date'">
@@ -65,16 +74,114 @@
 </template>
 
 <script setup>
-import { defineModel } from 'vue';
+import { defineModel, ref, watch } from 'vue';
 
 const props = defineProps({
   // [{ label, type: 'text'|'date', placeholder? }]
   columns: { type: Array, required: true },
   // 行高（触屏推荐 ≥52px）
   rowHeight: { type: Number, default: 52 },
+  // 是否允许拖拽表头调整列宽（默认开启）
+  resizable: { type: Boolean, default: true },
+  // 列宽持久化作用域：不同表格互不干扰（如 duty / alias）
+  storageKey: { type: String, default: 'default' },
 });
 
 const rows = defineModel('rows', { type: Array, default: () => [] });
+
+// ===== 列宽拖拽调整 =====
+const MIN_W = 64; // 列宽下限
+const DEFAULT_TEXT_W = 140; // 文本列默认宽度（未拖动时仍为弹性撑满，仅作为拖拽起点）
+const DEFAULT_DATE_W = 224; // 日期列默认宽度
+const WIDTHS_KEY = 'autoduty-touchtable-widths:';
+
+const colWidths = ref([]); // 仅记录被拖动过的列宽，null = 用默认布局
+
+function loadWidths() {
+  try {
+    return JSON.parse(localStorage.getItem(WIDTHS_KEY + props.storageKey) || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveWidths() {
+  const map = {};
+  props.columns.forEach((col, i) => {
+    const w = colWidths.value[i];
+    if (w != null) map[col.label] = Math.round(w);
+  });
+  try {
+    localStorage.setItem(WIDTHS_KEY + props.storageKey, JSON.stringify(map));
+  } catch (e) {
+    // 存储不可用时静默忽略（宽度仅本次会话生效）
+  }
+}
+
+// 列数变化时同步宽度数组；已保存过的宽度（localStorage / 本次会话拖动）继续生效
+watch(
+  () => props.columns,
+  (cols) => {
+    const saved = loadWidths();
+    while (colWidths.value.length < cols.length) colWidths.value.push(null);
+    if (colWidths.value.length > cols.length) colWidths.value.splice(cols.length);
+    cols.forEach((col, i) => {
+      if (colWidths.value[i] == null && typeof saved[col.label] === 'number') {
+        colWidths.value[i] = saved[col.label];
+      }
+    });
+  },
+  { immediate: true }
+);
+
+// 列样式：拖动过的列用固定宽度，其余走默认布局（文本列弹性撑满、日期列 224px）
+function colStyle(c) {
+  const w = colWidths.value[c];
+  if (w != null) return { width: w + 'px', flex: '0 0 auto', minWidth: w + 'px' };
+  return null;
+}
+
+let resizeState = null;
+
+function startResize(e, c) {
+  if (!props.resizable) return;
+  e.preventDefault();
+  // 以表头当前实际宽度为起点，避免从默认宽度跳变
+  const th = e.currentTarget.parentElement;
+  const startW = th && th.offsetWidth > 0 ? th.offsetWidth : DEFAULT_TEXT_W;
+  resizeState = { c, startX: e.clientX, startW };
+  const el = e.currentTarget;
+  try {
+    el.setPointerCapture(e.pointerId);
+  } catch (err) {
+    // 个别环境不支持指针捕获时忽略
+  }
+  el.addEventListener('pointermove', onResizeMove);
+  el.addEventListener('pointerup', onResizeEnd);
+  el.addEventListener('pointercancel', onResizeEnd);
+}
+
+function onResizeMove(e) {
+  if (!resizeState) return;
+  const delta = e.clientX - resizeState.startX;
+  colWidths.value[resizeState.c] = Math.max(MIN_W, resizeState.startW + delta);
+}
+
+function onResizeEnd(e) {
+  if (!resizeState) return;
+  const el = e.currentTarget;
+  el.removeEventListener('pointermove', onResizeMove);
+  el.removeEventListener('pointerup', onResizeEnd);
+  el.removeEventListener('pointercancel', onResizeEnd);
+  saveWidths();
+  resizeState = null;
+}
+
+// 双击表头分隔线恢复默认列宽
+function resetColWidth(c) {
+  colWidths.value[c] = null;
+  saveWidths();
+}
 
 // 隐藏的原生 date 输入（供日历按钮弹出选择器），按 行_列 缓存真实 DOM
 const pickers = {};
@@ -137,6 +244,7 @@ function onDatePick(r, c, v) {
 }
 
 .tt-th {
+  position: relative;
   flex: 1 1 0;
   min-width: 96px;
   display: flex;
@@ -144,6 +252,24 @@ function onDatePick(r, c, v) {
   height: 44px;
   padding: 0 12px;
   box-sizing: border-box;
+}
+
+/* 列宽拖拽手柄：贴表头右缘，鼠标/触屏均可拖动 */
+.tt-resize {
+  position: absolute;
+  right: -7px;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  z-index: 6;
+}
+
+.tt-resize:hover,
+.tt-resize:active {
+  background: rgba(0, 103, 192, 0.15);
 }
 
 .tt-th-date {
@@ -272,6 +398,11 @@ function onDatePick(r, c, v) {
 
   .tt-th-text {
     font-size: 14px;
+  }
+
+  .tt-resize {
+    width: 20px;
+    right: -10px;
   }
 }
 
