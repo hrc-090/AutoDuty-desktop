@@ -22,7 +22,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import ScrollViewer from '@winui/components/ScrollViewer.vue';
 import TextBlock from '@winui/components/TextBlock.vue';
 import Button from '@winui/components/Button.vue';
@@ -81,7 +81,21 @@ async function onImport() {
   }
 }
 
-onMounted(loadAliasTable);
+// 外部修改 data 目录表格文件时自动同步（Excel/WPS 保存后立即生效）
+// 回调需保持同一引用（on/off 成对），且 off 由 contextBridge 单独暴露
+const onTableChanged = () => {
+  showToast('检测到表格文件已修改，已同步');
+  loadAliasTable();
+};
+
+onMounted(() => {
+  loadAliasTable();
+  if (api?.onDutyExternalChange) api.onDutyExternalChange(onTableChanged);
+});
+
+onBeforeUnmount(() => {
+  if (api?.offDutyExternalChange) api.offDutyExternalChange(onTableChanged);
+});
 </script>
 
 <style scoped>

@@ -61,7 +61,7 @@
               <span class="ad-speed-rank">{{ i + 1 }}</span>
               <span class="ad-speed-name">{{ r.label }}</span>
               <span class="ad-speed-value" :class="r.ok ? 'is-ok' : 'is-bad'">
-                {{ r.ok ? (r.speed / 1048576).toFixed(2) + ' MB/s' : '不可用' }}
+                {{ r.ok ? r.ms + ' ms' : '不可用' }}
               </span>
             </div>
           </div>
@@ -126,14 +126,14 @@ const downloadedPath = ref('');
 const proxyNodes = ref([]);
 const speedResults = ref([]);
 const speedTesting = ref(false);
-// 测速结果标注：下拉框选项实时显示节点速度（key：'direct' 或节点 url）
+// 测速结果标注：下拉框选项实时显示节点耗时（key：'direct' 或节点 url）
 const speedOf = ref({});
 
-// 节点下拉框选项文本：测速完成后附加速度 / 不可用标记
+// 节点下拉框选项文本：测速完成后附加耗时（ms）/ 不可用标记
 function nodeOptionLabel(n) {
   const r = speedOf.value[n.url];
   if (!r) return n.label;
-  return r.ok ? `${n.label}（${(r.speed / 1048576).toFixed(2)} MB/s）` : `${n.label}（不可用）`;
+  return r.ok ? `${n.label}（${r.ms} ms）` : `${n.label}（不可用）`;
 }
 
 async function loadSettings() {
@@ -179,11 +179,13 @@ async function onSave() {
   showToast('设置已保存');
 }
 
-// 主题仅在用户手动选择时即时生效（加载配置/打开设置页不触发主题切换）
+// 主题切换即时生效并立即持久化（无需再点「保存设置」，重启后保持）
 function onThemeChange(e) {
   const v = e.target.value;
   settings.theme = v;
-  if (v) applyTheme(v);
+  if (!v) return;
+  applyTheme(v);
+  if (api) api.setConfig({ theme: v });
 }
 
 async function onCheckUpdate() {
@@ -227,6 +229,7 @@ async function onTestSpeed() {
     arr.forEach((r) => { map[r.url === '' ? 'direct' : r.url] = r; });
     speedOf.value = map;
   } catch (e) {
+    console.error('[testSpeed]', e, e?.stack);
     speedResults.value = [];
     showToast('测速失败：' + (e?.message || e));
   } finally {
@@ -418,5 +421,21 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+</style>
+
+<style>
+/* ===== 深色主题下拉框适配 =====
+   独立非 scoped 块：scoped + :global(html.theme-dark) 前缀规则在构建压缩时
+   会被错误合并丢失选择器（同 TouchTable.vue 教训），深色覆盖必须写在此处 */
+html.theme-dark .ad-select {
+  background-color: #2e2e2e;
+  color: #e8e8e8;
+  border-color: #3a3a3a;
+}
+
+html.theme-dark .ad-select option {
+  background-color: #2e2e2e;
+  color: #e8e8e8;
 }
 </style>

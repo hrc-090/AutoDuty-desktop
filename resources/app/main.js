@@ -107,6 +107,39 @@ function migrateLegacyData(dir) {
   }
 }
 
+// ==================== 数据目录文件监听（外部修改自动同步） ====================
+// 用户直接修改 data 目录下的 值日表.xlsx / aliases.xlsx（如 Excel/WPS）后，
+// 通知渲染进程刷新对应表格；应用自身保存（duty-core notifySelfWrite）写入被忽略。
+let lastSelfWrite = 0;
+let tableWatcher = null;
+let syncTimer = null;
+
+dutyCore.setOnSelfWrite(() => { lastSelfWrite = Date.now(); });
+
+function setupTableWatcher() {
+  const dir = getDataDir();
+  try {
+    if (tableWatcher) {
+      try { tableWatcher.close(); } catch (e) {}
+      tableWatcher = null;
+    }
+    if (!fs.existsSync(dir)) return;
+    tableWatcher = fs.watch(dir, { persistent: false }, (eventType, filename) => {
+      const name = String(filename || '');
+      if (name !== '值日表.xlsx' && name !== 'aliases.xlsx') return;
+      if (Date.now() - lastSelfWrite < 1500) return;
+      if (syncTimer) clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('duty:externalChange', {});
+        }
+      }, 800);
+    });
+  } catch (e) {
+    // 监听失败不影响应用运行，表格仍在打开页面时读取最新内容
+  }
+}
+
 // ==================== 开机自启动 ====================
 
 function updateAutoStart(enable) {
@@ -152,6 +185,22 @@ function createWindow(showWindow = true) {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
+
+  // 临时诊断：捕获渲染进程控制台输出（含 uncaught 错误），写入 temp 便于定位
+  const consoleLog = path.join(app.getPath('temp'), 'autoduty-console.log');
+  mainWindow.webContents.on('console-message', (...args) => {
+    let msg = '';
+    try {
+      const details = args[1] && typeof args[1] === 'object' ? args[1] : null;
+      msg = details ? String(details.message ?? '') : String(args[2] ?? '');
+    } catch (e) { msg = String(args[2] ?? ''); }
+    try {
+      fs.appendFileSync(consoleLog, `[${new Date().toISOString()}] ${msg}\n`);
+    } catch (e) {}
+  });
+
+  // 启动数据目录文件监听（外部修改 xlsx 时自动通知界面刷新）
+  setupTableWatcher();
 
   // 如果需要显示，等 ready-to-show 再显示避免白屏
   if (showWindow) {
@@ -750,7 +799,7 @@ function probeRange(url, outFile, timeoutMs) {
   });
 }
 
-// 对全部节点（含直连）并行探速，返回按速度降序的结果（保持快速，约 8 秒内）。
+// 对全部节点（含直连）并行探速，返回耗时(ms)升序结果（保持快速，约 8 秒内）。
 // 探测基准经过可达性校验：真实 Release 附件 → 仓库归档 → github 首页。
 ipcMain.handle('update:testSpeed', async (_, url) => {
   const probeBase = await resolveProbeBase(url);
@@ -761,10 +810,10 @@ ipcMain.handle('update:testSpeed', async (_, url) => {
     const probeFile = path.join(app.getPath('temp'), `autoduty-probe-${Date.now()}-${i}.part`);
     const { size, elapsed } = await probeRange(cand, probeFile, TIMEOUT);
     try { if (fs.existsSync(probeFile)) fs.unlinkSync(probeFile); } catch (e) {}
-    const speed = size > 0 ? size / Math.max(1, elapsed) : 0;
-    return { url: node.url, label: node.label, speed, ok: size > 0 };
+    return { url: node.url, label: node.label, ms: elapsed, ok: size > 0 };
   }));
-  results.sort((a, b) => b.speed - a.speed);
+  // 排序：可用节点按耗时升序（越快越靠前），不可用节点排最后
+  results.sort((a, b) => (a.ok === b.ok ? a.ms - b.ms : a.ok ? -1 : 1));
   return results;
 });
 
@@ -976,11 +1025,29 @@ ipcMain.handle('duty:fillNames', () => {
   return dutyCore.fillDutyWithRealNames(dutyPath, aliasDict);
 });
 
-// 批量分配日期
-ipcMain.handle('duty:assignDates', (_, { startDate, count, skipWeekends }) => {
+// 批量分配日期（按交接日自动续排，无起止日期）
+ipcMain.handle('duty:assignDates', (_, { weekdays }) => {
   const dataDir = getDataDir();
   const dutyPath = path.join(dataDir, '值日表.xlsx');
-  return dutyCore.assignDates(dutyPath, startDate, count, skipWeekends);
+  try {
+    return dutyCore.assignDates(dutyPath, weekdays);
+  } catch (e) {
+    return { assigned: 0, message: '分配失败：' + (e?.message || e) };
+  }
+});
+
+// 本地打开表格文件（系统默认程序 Excel/WPS），便于直接编辑后自动同步
+ipcMain.handle('table:openLocal', async (_, name) => {
+  try {
+    const dataDir = getDataDir();
+    const file = path.join(dataDir, name === 'alias' ? 'aliases.xlsx' : '值日表.xlsx');
+    if (!fs.existsSync(file)) dutyCore.ensureDataFiles(dataDir);
+    const err = await shell.openPath(file);
+    if (err) return { success: false, message: '打开失败：' + err };
+    return { success: true, message: '已用默认程序打开，修改保存后应用自动同步' };
+  } catch (e) {
+    return { success: false, message: '打开失败：' + (e?.message || e) };
+  }
 });
 
 ipcMain.handle('window:minimize', () => {

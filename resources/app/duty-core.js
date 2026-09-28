@@ -9,6 +9,16 @@ const path = require('path');
 const fs = require('fs');
 const fetch = require('node-fetch');
 
+// ==================== 写盘通知（供主进程识别“自身写入”） ====================
+// 数据目录文件被应用自身保存时，主进程文件监听应忽略，避免误触发外部修改刷新
+let onSelfWrite = null;
+function setOnSelfWrite(fn) {
+  onSelfWrite = fn;
+}
+function notifySelfWrite() {
+  if (onSelfWrite) onSelfWrite();
+}
+
 // ==================== 日期调度 ====================
 
 /**
@@ -230,6 +240,7 @@ function writeDutyTable(dutyPath, data) {
   });
   XLSX.utils.book_append_sheet(wb, ws, '值日表');
   XLSX.writeFile(wb, dutyPath);
+  notifySelfWrite();
 }
 
 /**
@@ -328,55 +339,86 @@ function getNextUnassignedRowIndex(dutyPath) {
 }
 
 /**
- * 从指定日期开始，为未分配的行批量分配值日日期
+ * 批量分配值日日期：自动从「已有日期最大结束日的次日」（无则明天）开始，
+ * 以「值日星期」（1=周一 … 7=周日）作为交接日；每行（组）写入
+ * 「交接日-下一交接日」范围（如 9.23-9.24、9.24-9.29，含下一交接日作为
+ * 交接边界，与表格既有手写格式 7.1-7.2、7.8-7.11 统一，不写单日）。
+ * 一直填到所有未分配行为止（安全上限 5 年）。
  * @param {string} dutyPath - 值日表路径
- * @param {string} startDate - 起始日期 YYYY-MM-DD
- * @param {number} count - 分配多少天（0=全部未分配的）
- * @param {boolean} skipWeekends - 是否跳过周末
+ * @param {number[]} weekdays - 值日星期（交接日）集合（1=周一 … 7=周日）
  * @returns {{ assigned: number, message: string }}
  */
-function assignDates(dutyPath, startDate, count, skipWeekends) {
+function assignDates(dutyPath, weekdays) {
   const { headers, rows } = readDutyTable(dutyPath);
   if (rows.length === 0) return { assigned: 0, message: '值日表为空' };
 
   const dateColIdx = findDateColumnIndex(headers);
   if (dateColIdx < 0) return { assigned: 0, message: '未找到日期列' };
 
-  // 找出所有未分配日期的行
+  if (!Array.isArray(weekdays) || weekdays.length === 0) {
+    return { assigned: 0, message: '请至少选择一个值日星期' };
+  }
+  const daySet = new Set(weekdays.map(Number));
+
+  // 未分配行（日期列为空），同时统计已有日期的最大结束日
   const unassignedIndices = [];
+  let maxEndMs = 0;
   for (let i = 0; i < rows.length; i++) {
-    if (!rows[i][dateColIdx]) {
+    const cell = String(rows[i][dateColIdx] ?? '').trim();
+    if (!cell) {
       unassignedIndices.push(i);
+      continue;
     }
+    const normalized = String(normalizeDate(cell));
+    const parts = normalized.split('~');
+    const last = parts[parts.length - 1];
+    const d = new Date(last);
+    if (!isNaN(d)) maxEndMs = Math.max(maxEndMs, d.getTime());
   }
 
   if (unassignedIndices.length === 0) {
     return { assigned: 0, message: '所有行已分配日期' };
   }
 
-  const toAssign = count > 0 ? unassignedIndices.slice(0, count) : unassignedIndices;
-  const start = new Date(startDate);
-  let curDate = new Date(start);
-  let assigned = 0;
+  // 起点：已有日期 → 最大结束日的次日；否则明天
+  const cur = maxEndMs > 0 ? new Date(maxEndMs) : new Date();
+  cur.setHours(0, 0, 0, 0);
+  if (maxEndMs > 0) cur.setDate(cur.getDate() + 1);
+  else cur.setDate(cur.getDate() + 1);
 
-  for (const rowIdx of toAssign) {
-    // 跳过周末
-    if (skipWeekends) {
-      while (curDate.getDay() === 0 || curDate.getDay() === 6) {
-        curDate.setDate(curDate.getDate() + 1);
-      }
-    }
+  // JS getDay()：0=周日…6=周六 → 统一为 1=周一…7=周日
+  const toWeekday = (d) => (d.getDay() === 0 ? 7 : d.getDay());
 
-    const dateStr = formatDate(curDate);
-    rows[rowIdx][dateColIdx] = dateStr;
-    assigned++;
-    curDate.setDate(curDate.getDate() + 1);
+  // 收集交接日：需要 未分配行数+1 个（第 N+1 个用于确定最后一组的结束日）
+  const need = unassignedIndices.length + 1;
+  const handovers = [];
+  let d = new Date(cur);
+  while (handovers.length < need && d.getFullYear() - cur.getFullYear() <= 5) {
+    if (daySet.has(toWeekday(d))) handovers.push(new Date(d));
+    d.setDate(d.getDate() + 1);
+  }
+  if (handovers.length < need) {
+    return { assigned: 0, message: '日期计算异常，请重试' };
+  }
+
+  // 短格式：9.23（不含年份与补零）
+  const fmt = (dt) => `${dt.getMonth() + 1}.${dt.getDate()}`;
+
+  // 每行写「交接日-下一交接日」范围（含下一交接日作为交接边界）：
+  // 连续交接日 → 9.23-9.24；有间隔 → 9.24-9.29；末行也照常写范围。
+  // 语义与 parseDatePeriod 一致（范围 = [起日切换时刻, 终日切换时刻)），
+  // 与本表既有手写格式（7.1-7.2、7.8-7.11）统一。
+  // 第 N+1 个交接日已收集（need = 行数+1），末行同样可写范围。
+  for (let i = 0; i < unassignedIndices.length; i++) {
+    const s = handovers[i];
+    const e = handovers[i + 1];
+    rows[unassignedIndices[i]][dateColIdx] = `${fmt(s)}-${fmt(e)}`;
   }
 
   // 写回
   writeDutyTable(dutyPath, { headers, rows });
 
-  return { assigned, message: `已分配 ${assigned} 天的值日日期` };
+  return { assigned: unassignedIndices.length, message: `已分配 ${unassignedIndices.length} 组的值日日期` };
 }
 
 // ==================== 别名管理 ====================
@@ -452,6 +494,7 @@ function writeAliasTable(aliasPath, entries) {
   const ws = XLSX.utils.aoa_to_sheet(data);
   XLSX.utils.book_append_sheet(wb, ws, '别名表');
   XLSX.writeFile(wb, aliasPath);
+  notifySelfWrite();
 }
 
 /**
@@ -526,6 +569,7 @@ function fillDutyWithRealNames(dutyPath, aliasDict) {
     });
     wb.Sheets[wb.SheetNames[0]] = newWs;
     XLSX.writeFile(wb, dutyPath);
+    notifySelfWrite();
   }
 
   return { changed, ambiguities };
@@ -618,6 +662,7 @@ function importDutyTable(srcPath, destPath) {
   });
   XLSX.utils.book_append_sheet(newWb, newWs, '值日表');
   XLSX.writeFile(newWb, destPath);
+  notifySelfWrite();
 
   const rowCount = raw.length - 1;
   return { success: true, message: `导入成功，共 ${rowCount} 条记录` };
@@ -643,6 +688,7 @@ function importAliasTable(srcPath, destPath) {
   const newWs = XLSX.utils.aoa_to_sheet(raw);
   XLSX.utils.book_append_sheet(newWb, newWs, '别名表');
   XLSX.writeFile(newWb, destPath);
+  notifySelfWrite();
 
   const rowCount = raw.length - 1;
   return { success: true, message: `导入成功，共 ${rowCount} 条记录` };
@@ -656,6 +702,7 @@ module.exports = {
   parseDateRange,
   isDateInRange,
   isNowInPeriod,
+  setOnSelfWrite,
   ensureDataFiles,
   readDutyTable,
   writeDutyTable,

@@ -43,9 +43,20 @@ contextBridge.exposeInMainWorld('autoduty', {
   minimize: () => ipcRenderer.invoke('window:minimize'),
   close: () => ipcRenderer.invoke('window:close'),
 
+  // 本地打开表格文件（系统默认程序），name: 'duty' | 'alias'
+  openLocalTable: (name) => ipcRenderer.invoke('table:openLocal', name),
+
   // 事件监听
   onDutyResult: (callback) => {
     ipcRenderer.on('duty:result', (_, result) => callback(result));
+  },
+  onDutyExternalChange: (callback) => {
+    // contextBridge 无法返回函数（会触发 "An object could not be cloned"），
+    // 因此取消订阅独立为 offDutyExternalChange，两者传同一个回调引用
+    ipcRenderer.on('duty:externalChange', callback);
+  },
+  offDutyExternalChange: (callback) => {
+    ipcRenderer.removeListener('duty:externalChange', callback);
   },
   onUpdateAvailable: (callback) => {
     ipcRenderer.on('update:available', (_, info) => callback(info));

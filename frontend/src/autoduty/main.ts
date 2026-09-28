@@ -5,6 +5,14 @@ import '@winui/styles/theme.css';
 import './global.css';
 import { initTheme } from './theme';
 
+// 临时诊断：全局捕获未处理错误/拒绝，供主进程 console-message 记录定位
+window.addEventListener('error', (ev) => {
+  console.error('[uncaught]', ev.error || ev.message, ev.error?.stack);
+});
+window.addEventListener('unhandledrejection', (ev) => {
+  console.error('[unhandledrejection]', ev.reason, ev.reason?.stack);
+});
+
 // 应用保存的主题配置（system/light/dark），无需阻塞挂载
 initTheme();
 

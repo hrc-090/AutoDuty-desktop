@@ -4,25 +4,26 @@
       <div class="ad-toolbar">
         <TextBlock class="ad-page-title" Text="值日安排表" FontSize="24" FontWeight="600" />
         <div class="ad-toolbar-actions">
+          <Button Style="SubtleButtonStyle" Content="打开本地表格" @Click="onOpenLocal" />
           <Button Style="SubtleButtonStyle" Content="导入 Excel" @Click="onImport" />
-          <Button Style="SubtleButtonStyle" Content="分配日期" @Click="toggleAssign" />
+          <Button Style="SubtleButtonStyle" Content="分配日期" @Click="onAssignClick" @pointerup="onAssignPointerUp" />
           <Button Style="SubtleButtonStyle" Content="+ 添加行" @Click="addRow" />
         </div>
       </div>
 
       <Border v-if="assignOpen" class="ad-card ad-assign">
         <div class="ad-field">
-          <TextBlock class="ad-label" Text="起始日期" FontSize="14" />
-          <input type="date" class="ad-input" v-model="assignStart" />
+          <TextBlock class="ad-label" Text="值日星期（交接日）" FontSize="14" />
+          <div class="ad-weekdays">
+            <label v-for="w in weekdayOptions" :key="w.v" class="ad-wd">
+              <input type="checkbox" :value="w.v" v-model="assignWeekdays" /> {{ w.label }}
+            </label>
+          </div>
+          <TextBlock class="ad-hint" Text="自动从现有日期之后继续，按交接日填满所有未分配行" FontSize="12" />
         </div>
-        <div class="ad-field">
-          <TextBlock class="ad-label" Text="分配天数（0=全部）" FontSize="14" />
-          <input type="number" class="ad-input ad-number" v-model.number="assignCount" min="0" />
-        </div>
-        <ToggleSwitch Header="跳过周末" :IsOn="assignSkipWeekend" @update:IsOn="assignSkipWeekend = $event" />
         <div class="ad-row">
-          <Button Style="AccentButtonStyle" Content="确认分配" @Click="onAssignConfirm" />
-          <Button Style="DefaultButtonStyle" Content="取消" @Click="toggleAssign" />
+          <Button Style="AccentButtonStyle" Content="确认分配" @Click="onAssignConfirmClick" @pointerup="onAssignConfirmPointerUp" />
+          <Button Style="DefaultButtonStyle" Content="取消" @Click="onAssignClick" @pointerup="onAssignPointerUp" />
         </div>
       </Border>
 
@@ -40,12 +41,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import ScrollViewer from '@winui/components/ScrollViewer.vue';
 import TextBlock from '@winui/components/TextBlock.vue';
 import Border from '@winui/components/Border.vue';
 import Button from '@winui/components/Button.vue';
-import ToggleSwitch from '@winui/components/ToggleSwitch.vue';
 import TouchTable from '../TouchTable.vue';
 import { useAutoduty } from '../useAutoduty';
 import { showToast } from '../toast';
@@ -65,9 +65,9 @@ const cols = computed(() =>
 );
 
 const assignOpen = ref(false);
-const assignStart = ref('');
-const assignCount = ref(0);
-const assignSkipWeekend = ref(true);
+// 值日星期（交接日）：1=周一 … 7=周日，默认周一至周五
+const weekdayOptions = [1, 2, 3, 4, 5, 6, 7].map((v) => ({ v, label: '周' + '一二三四五六日'[v - 1] }));
+const assignWeekdays = ref([1, 2, 3, 4, 5]);
 
 async function loadDutyTable() {
   if (!api) return;
@@ -104,16 +104,39 @@ function addRow() {
 
 function toggleAssign() {
   assignOpen.value = !assignOpen.value;
-  if (assignOpen.value && !assignStart.value) {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    assignStart.value = tomorrow.toISOString().split('T')[0];
-  }
+}
+
+// 触屏兜底：click 事件被浏览器吞掉时，由 pointerup 触发切换；
+// 300ms 内 click 已处理则忽略，避免正常设备上双击开关
+let lastAssignClickAt = 0;
+function onAssignClick() {
+  lastAssignClickAt = Date.now();
+  toggleAssign();
+}
+function onAssignPointerUp() {
+  if (Date.now() - lastAssignClickAt < 300) return;
+  toggleAssign();
+}
+
+// 确认分配同样加触屏兜底
+let lastConfirmAt = 0;
+function onAssignConfirmClick() {
+  lastConfirmAt = Date.now();
+  onAssignConfirm();
+}
+function onAssignConfirmPointerUp() {
+  if (Date.now() - lastConfirmAt < 300) return;
+  onAssignConfirm();
 }
 
 async function onSave() {
   if (!api) return;
-  const result = await api.saveDuty({ headers: headers.value, rows: dutyRows.value });
+  // ref.value 是响应式 Proxy，无法被 Electron IPC 结构化克隆；
+  // 必须展开为普通数组后再传（否则抛 "An object could not be cloned"）
+  const result = await api.saveDuty({
+    headers: [...headers.value],
+    rows: dutyRows.value.map((r) => [...r]),
+  });
   if (result?.success === false) {
     showToast('保存失败：' + (result.message || '未知错误'));
     return;
@@ -150,17 +173,32 @@ async function onImport() {
   }
 }
 
+// 用系统默认程序（Excel/WPS）打开 data 目录下的值日表，编辑保存后自动同步
+async function onOpenLocal() {
+  if (!api) return;
+  try {
+    const r = await api.openLocalTable('duty');
+    showToast(r?.message || (r?.success ? '已打开' : '打开失败'));
+  } catch (e) {
+    showToast('打开失败：' + (e?.message || e));
+  }
+}
+
 async function onAssignConfirm() {
   if (!api) return;
-  if (!assignStart.value) {
-    showToast('请选择起始日期');
+  if (assignWeekdays.value.length === 0) {
+    showToast('请至少选择一个值日星期');
     return;
   }
-  const result = await api.assignDates({
-    startDate: assignStart.value,
-    count: assignCount.value || 0,
-    skipWeekends: assignSkipWeekend.value,
-  });
+  let result;
+  try {
+    // assignWeekdays.value 是响应式 Proxy，需展开为普通数组后再传 IPC
+    result = await api.assignDates({ weekdays: [...assignWeekdays.value] });
+  } catch (e) {
+    console.error('[assignDates]', e, e?.stack);
+    showToast('分配失败：' + (e?.message || e));
+    return;
+  }
   showToast(result?.message || '分配完成');
   if (result?.assigned > 0) {
     assignOpen.value = false;
@@ -168,7 +206,21 @@ async function onAssignConfirm() {
   }
 }
 
-onMounted(loadDutyTable);
+// 外部修改 data 目录表格文件时自动同步（Excel/WPS 保存后立即生效）
+// 回调需保持同一引用（on/off 成对），且 off 由 contextBridge 单独暴露
+const onTableChanged = () => {
+  showToast('检测到表格文件已修改，已同步');
+  loadDutyTable();
+};
+
+onMounted(() => {
+  loadDutyTable();
+  if (api?.onDutyExternalChange) api.onDutyExternalChange(onTableChanged);
+});
+
+onBeforeUnmount(() => {
+  if (api?.offDutyExternalChange) api.offDutyExternalChange(onTableChanged);
+});
 </script>
 
 <style scoped>
@@ -223,6 +275,11 @@ onMounted(loadDutyTable);
   color: var(--text-secondary);
 }
 
+.ad-hint {
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
 .ad-input {
   height: 32px;
   padding: 0 8px;
@@ -240,6 +297,35 @@ onMounted(loadDutyTable);
 
 .ad-number {
   width: 140px;
+}
+
+/* 值日星期复选：胶囊样式，触屏友好 */
+.ad-weekdays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ad-wd {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--control-stroke-color-default);
+  border-radius: var(--ControlCornerRadius, 4px);
+  background: var(--control-color-fill-input);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ad-wd input {
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-base, #0067c0);
 }
 
 .ad-row {
