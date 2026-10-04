@@ -18,6 +18,17 @@
         </div>
 
         <ToggleSwitch Header="定时自动发送通知" :IsOn="settings.autoNotify" @update:IsOn="settings.autoNotify = $event" />
+
+        <div class="ad-field">
+          <TextBlock class="ad-label" Text="通知内容模板" FontSize="14" />
+          <textarea
+            class="ad-input ad-textarea"
+            v-model="settings.dutyTemplate"
+            rows="3"
+            placeholder="今日值日生：{值日生}"
+          ></textarea>
+          <TextBlock class="ad-hint" Text="支持 {表头} 占位符：{姓名}、{姓名2}、{日期}、{星期}、{值日生}（全部人员用顿号连接）；留空自动拼接。" FontSize="12" />
+        </div>
       </Border>
 
       <Border class="ad-card">
@@ -116,6 +127,7 @@ const settings = reactive({
   autoUpdate: true,
   updateProxy: '',
   theme: 'system',
+  dutyTemplate: '',
 });
 const currentVersion = ref('-');
 const updateResult = ref('');
@@ -149,6 +161,7 @@ async function loadSettings() {
   settings.autoUpdate = config.autoUpdate;
   settings.updateProxy = config.updateProxy || '';
   settings.theme = config.theme || 'system';
+  settings.dutyTemplate = config.dutyTemplate || '';
   currentVersion.value = config.currentVersion || '-';
 }
 
@@ -174,6 +187,7 @@ async function onSave() {
     autoUpdate: settings.autoUpdate,
     updateProxy: settings.updateProxy,
     theme: settings.theme,
+    dutyTemplate: settings.dutyTemplate,
   });
   applyTheme(settings.theme);
   showToast('设置已保存');
@@ -410,6 +424,15 @@ onMounted(() => {
 
 .ad-number {
   width: 140px;
+}
+
+.ad-textarea {
+  height: auto;
+  min-height: 76px;
+  padding: 8px;
+  resize: vertical;
+  line-height: 1.5;
+  font-family: inherit;
 }
 
 .ad-row {

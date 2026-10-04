@@ -30,7 +30,7 @@
           :class="{ 'tt-td-date': col.type === 'date' }"
           :style="colStyle(c)"
         >
-          <!-- 日期列：自由文本（兼容 9/26、2026-09-26 等既有格式）+ 日历按钮（原生选择器） -->
+          <!-- 日期列：自由文本输入（兼容 9/26、2026-09-26 等既有格式） -->
           <template v-if="col.type === 'date'">
             <input
               class="tt-input"
@@ -40,22 +40,6 @@
               :value="String(row[c] ?? '')"
               :placeholder="col.placeholder || '如 9/26'"
               @input="onInput(r, c, $event.target.value)"
-            />
-            <button
-              class="tt-cal"
-              type="button"
-              :aria-label="'选择' + col.label"
-              @click.stop="openPicker(r, c)"
-            >
-              <span class="icon" aria-hidden="true">&#xE787;</span>
-            </button>
-            <input
-              :ref="(el) => holdPicker(r, c, el)"
-              class="tt-native-date"
-              type="date"
-              tabindex="-1"
-              aria-hidden="true"
-              @change="onDatePick(r, c, $event.target.value)"
             />
           </template>
           <input
@@ -183,16 +167,6 @@ function resetColWidth(c) {
   saveWidths();
 }
 
-// 隐藏的原生 date 输入（供日历按钮弹出选择器），按 行_列 缓存真实 DOM
-const pickers = {};
-const keyOf = (r, c) => r + '_' + c;
-
-function holdPicker(r, c, el) {
-  const k = keyOf(r, c);
-  if (el) pickers[k] = el;
-  else delete pickers[k];
-}
-
 function setCell(r, c, v) {
   const next = rows.value[r] ? rows.value[r].slice() : [];
   next[c] = v;
@@ -201,25 +175,6 @@ function setCell(r, c, v) {
 
 function onInput(r, c, v) {
   setCell(r, c, v);
-}
-
-// 点日历按钮：调用 showPicker() 弹出系统日期选择；个别环境不支持时回退 click()
-function openPicker(r, c) {
-  const inp = pickers[keyOf(r, c)];
-  if (!inp) return;
-  try {
-    if (typeof inp.showPicker === 'function') inp.showPicker();
-    else inp.click();
-  } catch (e) {
-    inp.click();
-  }
-}
-
-function onDatePick(r, c, v) {
-  setCell(r, c, v);
-  // 清空隐藏输入，允许下次选择同一日期仍触发 change
-  const inp = pickers[keyOf(r, c)];
-  if (inp) inp.value = '';
 }
 </script>
 
@@ -331,48 +286,12 @@ function onDatePick(r, c, v) {
   border-radius: 0;
 }
 
-.tt-td-date .tt-input {
-  padding-right: 44px;
-}
-
 .tt-input::placeholder {
   color: #b0b0b0;
 }
 
 .tt-input:focus {
   background: rgba(0, 103, 192, 0.06);
-}
-
-/* 日历按钮：44px 触摸目标，停靠日期格右侧 */
-.tt-cal {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 44px;
-  border: none;
-  background: transparent;
-  color: var(--accent-base, #0067c0);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  padding: 0;
-}
-
-.tt-cal:hover {
-  background: rgba(0, 103, 192, 0.08);
-}
-
-/* 隐藏的原生日期输入：保留渲染（showPicker 需要非 display:none），离屏 + 透明 */
-.tt-native-date {
-  position: absolute;
-  left: -9999px;
-  top: 0;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
 }
 
 .tt-empty {
@@ -386,10 +305,6 @@ function onDatePick(r, c, v) {
 @media (pointer: coarse) {
   .tt-input {
     font-size: 16px;
-  }
-
-  .tt-cal {
-    width: 48px;
   }
 
   .tt-th {
@@ -443,14 +358,6 @@ html.theme-dark .tt-input::placeholder {
 
 html.theme-dark .tt-input:focus {
   background: rgba(76, 194, 255, 0.1);
-}
-
-html.theme-dark .tt-cal {
-  color: var(--accent-base, #4cc2ff);
-}
-
-html.theme-dark .tt-cal:hover {
-  background: rgba(76, 194, 255, 0.12);
 }
 
 html.theme-dark .tt-empty {

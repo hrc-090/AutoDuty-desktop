@@ -259,7 +259,7 @@ function findDateColumnIndex(headers) {
  * 使用时段匹配：当前时间落在 [起日 switchHour, 终日 switchHour) 内则匹配
  * "6.1-6.2" + switchHour=18 → 匹配 6/1 18:00 ~ 6/2 18:00
  */
-function getActiveDuty(dutyPath, switchHour) {
+function getActiveDuty(dutyPath, switchHour, template) {
   const { headers, rows } = readDutyTable(dutyPath);
   if (rows.length === 0) return null;
 
@@ -271,7 +271,7 @@ function getActiveDuty(dutyPath, switchHour) {
     if (!dateVal) continue;
 
     if (isNowInPeriod(dateVal, switchHour)) {
-      return buildDutyText(headers, row);
+      return buildDutyText(headers, row, template);
     }
   }
 
@@ -280,8 +280,19 @@ function getActiveDuty(dutyPath, switchHour) {
 
 /**
  * 根据 headers 和 row 拼接值日文本
+ * @param {string[]} headers - 表头
+ * @param {string[]} row - 行数据
+ * @param {string} [template] - 自定义模板（如「今日值日生：{姓名}」）；为空时回退自动拼接
+ * 占位符规则：
+ *  - {表头}：替换对应列的值（如 {姓名}、{姓名2}、{日期}、{星期}）
+ *  - {值日生}：所有任务列（非日期/星期/组次/注）的值用顿号连接
+ *  - 未匹配到的占位符会被清空
  */
-function buildDutyText(headers, row) {
+function buildDutyText(headers, row, template) {
+  if (template && String(template).trim()) {
+    return renderDutyTemplate(template, headers, row);
+  }
+
   const skipCols = new Set();
   headers.forEach((h, i) => {
     if (['星期', '值日日期', '组次', '注'].includes(h) || h.includes('日期')) {
@@ -301,10 +312,72 @@ function buildDutyText(headers, row) {
 }
 
 /**
+ * 用自定义模板渲染值日文本（{表头} 占位符替换）
+ */
+function renderDutyTemplate(template, headers, row) {
+  const skipCols = new Set();
+  headers.forEach((h, i) => {
+    if (['星期', '值日日期', '组次', '注'].includes(h) || String(h || '').includes('日期')) {
+      skipCols.add(i);
+    }
+  });
+
+  // {值日生}：所有任务列（人员列）的值用顿号连接
+  const personParts = [];
+  headers.forEach((h, i) => {
+    if (skipCols.has(i)) return;
+    const v = row[i];
+    if (v != null && String(v).trim()) personParts.push(String(v).trim());
+  });
+  const personText = personParts.join('、');
+
+  let out = String(template);
+  const used = new Set();
+  const placeholderKeys = [...String(template).matchAll(/\{([^}]+)\}/g)].map((m) => m[1]);
+
+  for (const key of placeholderKeys) {
+    if (used.has(key)) continue;
+    used.add(key);
+
+    let val = '';
+    if (key === '值日生') {
+      val = personText;
+    } else {
+      // 精确表头优先；其次去掉末尾数字后比较；再退化为包含关系
+      const plain = key.replace(/\d+$/, '');
+      let idx = -1;
+      for (let i = 0; i < headers.length; i++) {
+        if (String(headers[i] || '') === key) { idx = i; break; }
+      }
+      if (idx < 0) {
+        for (let i = 0; i < headers.length; i++) {
+          if (String(headers[i] || '').replace(/\d+$/, '') === plain) { idx = i; break; }
+        }
+      }
+      if (idx < 0) {
+        for (let i = 0; i < headers.length; i++) {
+          const h = String(headers[i] || '');
+          if (h.includes(key) || key.includes(h)) { idx = i; break; }
+        }
+      }
+      if (idx >= 0) val = cellText(row[idx]);
+    }
+    out = out.split(`{${key}}`).join(val);
+  }
+
+  // 清理未匹配到的占位符
+  return out.replace(/\{[^}]*\}/g, '');
+}
+
+function cellText(v) {
+  return v != null && v !== '' ? String(v) : '';
+}
+
+/**
  * 获取指定日期的值日信息（手动查询用）
  * 在值日日期列中查找匹配的行
  */
-function getDutyForDate(dutyPath, targetDate) {
+function getDutyForDate(dutyPath, targetDate, template) {
   const { headers, rows } = readDutyTable(dutyPath);
   if (rows.length === 0) return null;
 
@@ -314,7 +387,7 @@ function getDutyForDate(dutyPath, targetDate) {
     for (const row of rows) {
       const dateVal = row[dateColIdx];
       if (dateVal && isDateInRange(targetDate, dateVal)) {
-        return buildDutyText(headers, row);
+        return buildDutyText(headers, row, template);
       }
     }
   }
@@ -601,7 +674,7 @@ async function sendNotification(apiUrl, content) {
 
 // ==================== 一键执行 ====================
 
-async function runDuty(dataDir, switchHour, apiUrl) {
+async function runDuty(dataDir, switchHour, apiUrl, template) {
   const { dutyPath, aliasPath } = ensureDataFiles(dataDir);
   const aliasDict = loadAliases(aliasPath);
 
@@ -610,7 +683,7 @@ async function runDuty(dataDir, switchHour, apiUrl) {
 
   // 使用时段匹配：当前时间落在某个值日时段内则匹配
   const targetDate = getTargetDate(switchHour);
-  const dutyText = getDutyForDate(dutyPath, targetDate);
+  const dutyText = getDutyForDate(dutyPath, targetDate, template);
 
   if (!dutyText) {
     return {

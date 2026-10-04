@@ -69,6 +69,7 @@ const store = new Store({
     autoUpdate: true,
     updateProxy: '', // GitHub 加速节点：''=自动测速 | 'direct'=直连 | 具体节点 url
     theme: 'system', // 'system' | 'light' | 'dark'
+    dutyTemplate: '', // 值日通知内容模板，如「今日值日生：{姓名}」，空=自动拼接
   },
 });
 
@@ -254,6 +255,7 @@ function createTray() {
 async function executeDuty() {
   const apiUrl = store.get('apiUrl');
   const switchHour = store.get('switchHour', 18);
+  const template = store.get('dutyTemplate', '');
   const dataDir = getDataDir();
 
   if (!apiUrl) {
@@ -268,7 +270,7 @@ async function executeDuty() {
   }
 
   try {
-    const result = await dutyCore.runDuty(dataDir, switchHour, apiUrl);
+    const result = await dutyCore.runDuty(dataDir, switchHour, apiUrl, template);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('duty:result', result);
     }
@@ -321,6 +323,7 @@ ipcMain.handle('config:get', () => ({
   autoUpdate: store.get('autoUpdate', true),
   updateProxy: store.get('updateProxy', ''),
   theme: store.get('theme', 'system'),
+  dutyTemplate: store.get('dutyTemplate', ''),
   currentVersion: CURRENT_VERSION,
 }));
 
@@ -346,6 +349,7 @@ ipcMain.handle('config:set', (_, config) => {
       ? config.theme
       : 'system';
   }
+  if (config.dutyTemplate !== undefined) store.set('dutyTemplate', config.dutyTemplate);
   startSchedule();
   return true;
 });
