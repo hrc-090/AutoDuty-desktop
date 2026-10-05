@@ -9,10 +9,10 @@ contextBridge.exposeInMainWorld('autoduty', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (config) => ipcRenderer.invoke('config:set', config),
 
-  // 值日执行
-  executeDuty: () => ipcRenderer.invoke('duty:execute'),
-  previewDuty: () => ipcRenderer.invoke('duty:preview'),
-  previewDutyDate: (dateStr) => ipcRenderer.invoke('duty:previewDate', dateStr),
+  // 值日执行（template：发送内容模板，空=自动拼接）
+  executeDuty: (template) => ipcRenderer.invoke('duty:execute', template),
+  previewDuty: (template) => ipcRenderer.invoke('duty:preview', template),
+  previewDutyDate: (dateStr, template) => ipcRenderer.invoke('duty:previewDate', dateStr, template),
 
   // 值日表 CRUD
   getDutyAll: () => ipcRenderer.invoke('duty:getAll'),

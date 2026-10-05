@@ -18,17 +18,6 @@
         </div>
 
         <ToggleSwitch Header="定时自动发送通知" :IsOn="settings.autoNotify" @update:IsOn="settings.autoNotify = $event" />
-
-        <div class="ad-field">
-          <TextBlock class="ad-label" Text="通知内容模板" FontSize="14" />
-          <textarea
-            class="ad-input ad-textarea"
-            v-model="settings.dutyTemplate"
-            rows="3"
-            placeholder="今日值日生：{值日生}"
-          ></textarea>
-          <TextBlock class="ad-hint" Text="支持 {表头} 占位符：{姓名}、{姓名2}、{日期}、{星期}、{值日生}（全部人员用顿号连接）；留空自动拼接。" FontSize="12" />
-        </div>
       </Border>
 
       <Border class="ad-card">
@@ -59,14 +48,13 @@
           <TextBlock class="ad-label" Text="GitHub 加速节点" FontSize="14" />
           <select class="ad-input ad-select" v-model="settings.updateProxy">
             <option value="">自动测速（下载时自动选择最快节点）</option>
-            <option value="direct">{{ nodeOptionLabel({ url: 'direct', label: '直连（不使用加速）' }) }}</option>
-            <option v-for="n in proxyNodes" :key="n.url" :value="n.url">{{ nodeOptionLabel(n) }}</option>
+            <option v-for="n in sortedOptions" :key="n.url" :value="n.url">{{ nodeOptionLabel(n) }}</option>
           </select>
           <TextBlock class="ad-hint" Text="加速节点来自 github-proxy 镜像列表，用于加速更新包下载" FontSize="12" />
           <div class="ad-row">
             <Button Style="DefaultButtonStyle" Content="节点测速" @Click="onTestSpeed" :IsEnabled="!speedTesting" />
           </div>
-          <TextBlock v-if="speedTesting" class="ad-hint" Text="正在测速，最多约 8 秒…" FontSize="12" />
+          <TextBlock v-if="speedTesting" class="ad-hint" Text="正在测延迟，最多约 5 秒…" FontSize="12" />
           <div v-else-if="speedResults.length" class="ad-speed-list">
             <div v-for="(r, i) in speedResults" :key="r.url || 'direct'" class="ad-speed-item">
               <span class="ad-speed-rank">{{ i + 1 }}</span>
@@ -104,7 +92,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import ScrollViewer from '@winui/components/ScrollViewer.vue';
 import TextBlock from '@winui/components/TextBlock.vue';
 import Border from '@winui/components/Border.vue';
@@ -127,7 +115,6 @@ const settings = reactive({
   autoUpdate: true,
   updateProxy: '',
   theme: 'system',
-  dutyTemplate: '',
 });
 const currentVersion = ref('-');
 const updateResult = ref('');
@@ -140,6 +127,28 @@ const speedResults = ref([]);
 const speedTesting = ref(false);
 // 测速结果标注：下拉框选项实时显示节点耗时（key：'direct' 或节点 url）
 const speedOf = ref({});
+
+// 测速后下拉框按延迟排序：可用节点在前（ms 升序），未测速保持原顺序，不可用排最后
+const sortedOptions = computed(() => {
+  const opts = [
+    { url: 'direct', label: '直连（不使用加速）' },
+    ...proxyNodes.value.map((n) => ({ url: n.url, label: n.label })),
+  ];
+  const scored = opts.map((o, idx) => {
+    const r = speedOf.value[o.url];
+    let grp;
+    if (!r) grp = 1; // 未测速
+    else if (r.ok) grp = 0; // 可用
+    else grp = 2; // 不可用
+    return { ...o, grp, ms: r && r.ok ? r.ms : Infinity, idx };
+  });
+  scored.sort((a, b) => {
+    if (a.grp !== b.grp) return a.grp - b.grp;
+    if (a.grp === 0) return a.ms - b.ms;
+    return a.idx - b.idx;
+  });
+  return scored;
+});
 
 // 节点下拉框选项文本：测速完成后附加耗时（ms）/ 不可用标记
 function nodeOptionLabel(n) {
@@ -161,7 +170,6 @@ async function loadSettings() {
   settings.autoUpdate = config.autoUpdate;
   settings.updateProxy = config.updateProxy || '';
   settings.theme = config.theme || 'system';
-  settings.dutyTemplate = config.dutyTemplate || '';
   currentVersion.value = config.currentVersion || '-';
 }
 
@@ -187,7 +195,6 @@ async function onSave() {
     autoUpdate: settings.autoUpdate,
     updateProxy: settings.updateProxy,
     theme: settings.theme,
-    dutyTemplate: settings.dutyTemplate,
   });
   applyTheme(settings.theme);
   showToast('设置已保存');
@@ -424,15 +431,6 @@ onMounted(() => {
 
 .ad-number {
   width: 140px;
-}
-
-.ad-textarea {
-  height: auto;
-  min-height: 76px;
-  padding: 8px;
-  resize: vertical;
-  line-height: 1.5;
-  font-family: inherit;
 }
 
 .ad-row {

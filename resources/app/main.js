@@ -215,6 +215,39 @@ function createWindow(showWindow = true) {
     e.preventDefault();
     mainWindow.hide();
   });
+
+  // 进入后台（最小化/隐藏到托盘）时销毁渲染进程释放资源，恢复显示时重建
+  mainWindow.on('minimize', destroyRenderer);
+  mainWindow.on('restore', restoreRenderer);
+  mainWindow.on('hide', destroyRenderer);
+  mainWindow.on('show', restoreRenderer);
+
+  // 后台启动（startHidden / 开机自启隐藏）：加载完成后立即销毁渲染进程，首次显示时重建
+  if (!showWindow) {
+    mainWindow.webContents.once('did-finish-load', () => destroyRenderer());
+  }
+}
+
+// 销毁渲染进程（forcefullyCrashRenderer 会终止渲染进程并静默进入 crashed 状态）
+function destroyRenderer() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const wc = mainWindow.webContents;
+    if (wc && !wc.isDestroyed() && !wc.isCrashed()) wc.forcefullyCrashRenderer();
+  } catch (e) {
+    // 个别环境不支持时静默忽略
+  }
+}
+
+// 恢复显示时重建渲染进程（reload 会重新加载页面并恢复 preload/事件订阅）
+function restoreRenderer() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const wc = mainWindow.webContents;
+    if (wc && !wc.isDestroyed() && wc.isCrashed()) wc.reload();
+  } catch (e) {
+    // 重建失败时忽略（下次显示再试）
+  }
 }
 
 // 原生窗口管理按钮（最小化/最大化/关闭）跟随深浅色主题：
@@ -252,10 +285,10 @@ function createTray() {
 
 // ==================== 核心执行 ====================
 
-async function executeDuty() {
+async function executeDuty(template) {
   const apiUrl = store.get('apiUrl');
   const switchHour = store.get('switchHour', 18);
-  const template = store.get('dutyTemplate', '');
+  const tpl = template ?? store.get('dutyTemplate', '');
   const dataDir = getDataDir();
 
   if (!apiUrl) {
@@ -270,7 +303,7 @@ async function executeDuty() {
   }
 
   try {
-    const result = await dutyCore.runDuty(dataDir, switchHour, apiUrl, template);
+    const result = await dutyCore.runDuty(dataDir, switchHour, apiUrl, tpl);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('duty:result', result);
     }
@@ -803,20 +836,40 @@ function probeRange(url, outFile, timeoutMs) {
   });
 }
 
-// 对全部节点（含直连）并行探速，返回耗时(ms)升序结果（保持快速，约 8 秒内）。
+// 延迟测速：只取前 4KB（-r 0-4095），耗时即连接延迟（ms），快速且兼容多数节点。
+// 不支持 Range 的节点会返回完整文件，超时窗口内结束，耗时大 → 自动排后。
+function probeLatency(url, outFile, timeoutMs) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const cp = spawn(
+      'curl.exe',
+      ['-sL', '--ssl-no-revoke', '--fail', '-r', '0-4095', '--max-time', String(Math.max(1, Math.ceil(timeoutMs / 1000))), '-o', outFile, url],
+      { stdio: 'ignore' }
+    );
+    const done = (size) => resolve({ size, elapsed: Math.max(1, Date.now() - started) });
+    cp.on('exit', () => {
+      let size = 0;
+      try { if (fs.existsSync(outFile)) size = fs.statSync(outFile).size; } catch (e) {}
+      done(size);
+    });
+    cp.on('error', () => done(0));
+  });
+}
+
+// 对全部节点（含直连）并行测延迟，返回耗时(ms)升序结果（保持快速，约 5 秒内）。
 // 探测基准经过可达性校验：真实 Release 附件 → 仓库归档 → github 首页。
 ipcMain.handle('update:testSpeed', async (_, url) => {
   const probeBase = await resolveProbeBase(url);
-  const TIMEOUT = 8000;
+  const TIMEOUT = 5000;
   const nodes = [{ url: '', label: '直连' }, ...GITHUB_PROXY_NODES];
   const results = await Promise.all(nodes.map(async (node, i) => {
     const cand = node.url ? node.url + probeBase : probeBase;
     const probeFile = path.join(app.getPath('temp'), `autoduty-probe-${Date.now()}-${i}.part`);
-    const { size, elapsed } = await probeRange(cand, probeFile, TIMEOUT);
+    const { size, elapsed } = await probeLatency(cand, probeFile, TIMEOUT);
     try { if (fs.existsSync(probeFile)) fs.unlinkSync(probeFile); } catch (e) {}
     return { url: node.url, label: node.label, ms: elapsed, ok: size > 0 };
   }));
-  // 排序：可用节点按耗时升序（越快越靠前），不可用节点排最后
+  // 排序：可用节点按延迟升序（越快越靠前），不可用节点排最后
   results.sort((a, b) => (a.ok === b.ok ? a.ms - b.ms : a.ok ? -1 : 1));
   return results;
 });
@@ -902,24 +955,26 @@ function autoCheckUpdate() {
   }, 4000);
 }
 
-ipcMain.handle('duty:execute', () => executeDuty());
+ipcMain.handle('duty:execute', (_, template) => executeDuty(template));
 
-ipcMain.handle('duty:preview', () => {
+ipcMain.handle('duty:preview', (_, template) => {
   const switchHour = store.get('switchHour', 18);
   const dataDir = getDataDir();
   dutyCore.ensureDataFiles(dataDir);
   const dutyPath = path.join(dataDir, '值日表.xlsx');
   const targetDate = dutyCore.getTargetDate(switchHour);
-  const dutyText = dutyCore.getDutyForDate(dutyPath, targetDate);
+  const tpl = template ?? store.get('dutyTemplate', '');
+  const dutyText = dutyCore.getDutyForDate(dutyPath, targetDate, tpl);
   return { targetDate, dutyText, switchHour };
 });
 
 // 按指定日期预览（不依赖切换时间）
-ipcMain.handle('duty:previewDate', (_, dateStr) => {
+ipcMain.handle('duty:previewDate', (_, dateStr, template) => {
   const dataDir = getDataDir();
   dutyCore.ensureDataFiles(dataDir);
   const dutyPath = path.join(dataDir, '值日表.xlsx');
-  const dutyText = dutyCore.getDutyForDate(dutyPath, dateStr);
+  const tpl = template ?? store.get('dutyTemplate', '');
+  const dutyText = dutyCore.getDutyForDate(dutyPath, dateStr, tpl);
   return { targetDate: dateStr, dutyText };
 });
 

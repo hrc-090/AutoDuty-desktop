@@ -18,6 +18,18 @@
       </Border>
 
       <Border class="ad-card">
+        <TextBlock class="ad-label" Text="发送内容模板" FontSize="14" />
+        <textarea
+          class="ad-input ad-textarea"
+          v-model="dutyTemplate"
+          rows="3"
+          placeholder="今日值日生：{值日生}"
+          @input="onTemplateInput"
+        ></textarea>
+        <TextBlock class="ad-hint" Text="支持 {表头} 占位符：{姓名}、{姓名2}、{日期}、{星期}、{值日生}（全部人员）；留空自动拼接。改动立即生效并用于定时发送。" FontSize="12" />
+      </Border>
+
+      <Border class="ad-card">
         <TextBlock class="ad-label" Text="上次执行" FontSize="14" />
         <TextBlock class="ad-last" :Text="homeState.last" FontSize="14" :MaxLines="4" />
       </Border>
@@ -39,28 +51,43 @@ import { homeState } from '../state';
 const api = useAutoduty();
 const manualDate = ref('');
 const dutyText = ref('--');
+const dutyTemplate = ref('');
 
 async function loadHome() {
   if (!api) return;
   let preview;
   if (manualDate.value) {
-    preview = await api.previewDutyDate(manualDate.value);
+    preview = await api.previewDutyDate(manualDate.value, dutyTemplate.value);
   } else {
-    preview = await api.previewDuty();
+    preview = await api.previewDuty(dutyTemplate.value);
   }
   dutyText.value = preview?.dutyText || '无值日安排（未分配日期或当天无数据）';
+}
+
+// 模板改动：立即持久化（供定时发送使用）并刷新预览
+function onTemplateInput() {
+  if (api) api.setConfig({ dutyTemplate: dutyTemplate.value });
+  loadHome();
 }
 
 async function onExecute() {
   if (!api || homeState.executing) return;
   homeState.executing = true;
-  await api.executeDuty();
+  await api.executeDuty(dutyTemplate.value);
 }
 
 // duty result 到达后刷新安排
 watch(() => homeState.tick, loadHome);
 
-onMounted(loadHome);
+onMounted(async () => {
+  try {
+    const cfg = await api.getConfig();
+    if (cfg) dutyTemplate.value = cfg.dutyTemplate || '';
+  } catch (e) {
+    // 配置不可用时忽略，模板保持默认
+  }
+  loadHome();
+});
 </script>
 
 <style scoped>
@@ -131,5 +158,14 @@ onMounted(loadHome);
 .ad-date {
   flex: 1;
   min-width: 0;
+}
+
+.ad-textarea {
+  height: auto;
+  min-height: 76px;
+  padding: 8px;
+  resize: vertical;
+  line-height: 1.5;
+  font-family: inherit;
 }
 </style>
